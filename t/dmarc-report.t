@@ -265,6 +265,37 @@ subtest 'totals are kept per domain, not merged across domains' => sub {
 		'concert heading counts its own and names the foreign one');
 };
 
+subtest 'the reports it read can be listed for archiving' => sub {
+	my $dir = File::Spec->catdir($main::TMP, 'listed');
+	mkdir($dir) or die "Cannot mkdir $dir: $!";
+
+	# Two real reports and two things that are not: the list has to name the
+	# reports so that moving them aside cannot touch anything else.
+	write_file(File::Spec->catfile($dir, 'one.xml'),
+		report_xml(name => 'one.xml', domain => 'bandsman.co.uk'));
+	my $source = File::Spec->catfile($main::TMP, 'listed-source.xml');
+	write_file($source, report_xml(name => 'two.xml', domain => 'concert-bands.co.uk'));
+	zip($source => File::Spec->catfile($dir, 'two.zip')) or die "zip: $ZipError";
+
+	my $csv = File::Spec->catfile($main::TMP, 'listed.csv');
+	write_file($csv, "Country,City\nGB,London\n");
+	gzip($csv => File::Spec->catfile($dir, 'not-a-report.xml.gz')) or die "gzip: $GzipError";
+
+	my $list = File::Spec->catfile($main::TMP, 'read-files.txt');
+	my ($status) = run_script('-d', $dir, '--file-list', $list);
+	is($status, 0, 'exits 0');
+
+	my @listed = grep { length } split /\n/, slurp($list);
+	is(scalar(@listed), 2, 'exactly the two reports are listed');
+
+	my %names = map { (split(m{/}, $_))[-1] => 1 } @listed;
+	ok($names{'one.xml'}, 'the .xml report is listed');
+	ok($names{'two.zip'}, 'the .zip report is listed');
+	ok(!$names{'not-a-report.xml.gz'}, 'the non-report is not listed, so archiving cannot move it');
+
+	like($listed[0], qr{\A/}, 'paths are absolute, so the caller can move them from anywhere');
+};
+
 subtest 'an empty directory and a bad directory are errors' => sub {
 	my $empty = File::Spec->catdir($main::TMP, 'empty');
 	mkdir($empty) or die "Cannot mkdir $empty: $!";

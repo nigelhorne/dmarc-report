@@ -33,10 +33,11 @@ my $DEFAULT_EXPECTED = '67.205.23.146';
 my $home = $ENV{'HOME'} || (getpwuid($<))[7] || '.';
 my $DEFAULT_DIR = $ENV{'DMARC_DIR'} || "$home/Downloads";
 
-my (@dirs, @expected, $help);
+my (@dirs, @expected, $file_list, $help);
 GetOptions(
 	'dir|d=s' => \@dirs,
 	'expected|e=s' => \@expected,
+	'file-list=s' => \$file_list,
 	'help|h' => \$help,
 ) or pod2usage(-exitval => 2, -verbose => 0);
 pod2usage(-exitval => 0, -verbose => 1) if($help);
@@ -172,6 +173,7 @@ sub when
 # not be added together: an address that legitimately sends for one domain is
 # not thereby legitimate for another.
 my %by_domain;
+my @read_files;
 my ($total_messages, $total_records, $reports_read) = (0, 0, 0);
 my $unexpected_messages = 0;
 
@@ -185,6 +187,7 @@ foreach my $path (@files) {
 		next;
 	}
 	$reports_read++;
+	push @read_files, File::Spec->rel2abs($path);
 
 	my ($meta) = $doc->findnodes("//*[local-name()='report_metadata']");
 	my ($policy) = $doc->findnodes("//*[local-name()='policy_published']");
@@ -263,6 +266,14 @@ foreach my $path (@files) {
 		$entry->{'fail'} += $count if(!$passed);
 		$entry->{'dkim_seen'}{$_} = 1 foreach(@dkim_auth);
 	}
+}
+
+# Named before the summary is printed, so a caller that moves the files aside
+# knows exactly which ones were summarised - and which were merely in the way.
+if(defined($file_list)) {
+	open(my $fh, '>', $file_list) or die "Cannot write $file_list: $!\n";
+	print $fh map { "$_\n" } @read_files;
+	close($fh) or die "Cannot close $file_list: $!\n";
 }
 
 print '=' x 78, "\n";
@@ -349,6 +360,13 @@ A directory of reports.  May be given more than once.
 
 A host that is allowed to send as these domains.  May be given more than
 once.  Defaults to C<67.205.23.146>, the VPS that sends the sites' mail.
+
+=item B<--file-list> FILE
+
+Write to FILE the path of every report that was read, one per line.  Only
+files that were actually summarised are listed: the installers, archives and
+data sets that share the directory are not, so a caller can safely move what
+is named there out of the way and have the next run report only what is new.
 
 =item B<--help>, B<-h>
 

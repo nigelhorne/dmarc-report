@@ -7,6 +7,11 @@
 # failure in LOG so the same information survives a week in which no mail
 # transport was available.
 #
+# The reports it summarised are then moved into the archive directory, so that
+# next week's run reports that week's mail rather than repeating last week's.
+# Only the files dmarc-report.pl says it read are moved: a downloads directory
+# also holds installers and data sets, and one of them is 13 GB.
+#
 # Cron runs with almost no environment, so the perl that has XML::LibXML is
 # named explicitly instead of being found on PATH: the system perl does not
 # have it, and a job that fails for that reason would be silent.
@@ -26,16 +31,74 @@ PERL=${PERL:-/home/njh/perl5/perlbrew/perls/perl-5.40.0/bin/perl}
 [ -x "$PERL" ] || PERL=perl
 
 REPORTS=${DMARC_DIR:-$HOME/Downloads}
+ARCHIVE=${DMARC_ARCHIVE_DIR:-$REPORTS/archive}
 MAIL_TO=${MAIL_TO:-alerts@bandsman.co.uk}
 LOG=${DMARC_LOG:-$HOME/dmarc-report.log}
 SUBJECT="DMARC: mail from an address that is not the VPS"
 
-# One run, one answer: the output is captured so that it can be both logged
-# and mailed, and so that a clean week prints nothing at all.
-output=$("$PERL" "$REPORT" -d "$REPORTS" 2>&1)
+MOVED=0
+
+# A temporary file per run, so two runs cannot tread on each other's list.
+LIST=$(mktemp "${TMPDIR:-/tmp}/dmarc-read.XXXXXX") || LIST=
+trap 'if [ -n "${LIST:-}" ]; then rm -f "$LIST"; fi' EXIT HUP INT TERM
+
+if [ -n "$LIST" ]; then
+	output=$("$PERL" "$REPORT" -d "$REPORTS" --file-list "$LIST" 2>&1)
+else
+	output=$("$PERL" "$REPORT" -d "$REPORTS" 2>&1)
+fi
 status=$?
 
+# Move aside the reports just summarised.  A name already in the archive is
+# kept: the same report can legitimately be fetched twice, and the second copy
+# must not overwrite the first.
+archive_reports()
+{
+	# A rehearsal must not have side effects, and this is the one place that
+	# moves files, so every caller is covered by the check being here.
+	if [ "${DRY_RUN:-0}" = 1 ] || [ "${DMARC_ARCHIVE:-1}" = 0 ]; then
+		return 0
+	fi
+	if [ -z "$LIST" ] || [ ! -s "$LIST" ]; then
+		return 0
+	fi
+
+	if ! mkdir -p "$ARCHIVE"; then
+		echo "dmarc-weekly: cannot create $ARCHIVE; reports left where they are" >&2
+		return 1
+	fi
+
+	while IFS= read -r report_file; do
+		[ -n "$report_file" ] || continue
+		[ -f "$report_file" ] || continue
+		target="$ARCHIVE/$(basename "$report_file")"
+		if [ -e "$target" ]; then
+			target="$target.$(date +%Y%m%d%H%M%S)"
+		fi
+		if mv -- "$report_file" "$target"; then
+			MOVED=$((MOVED + 1))
+		fi
+	done < "$LIST"
+
+	return 0
+}
+
+# Nothing new this week is the normal quiet outcome once the previous reports
+# have been archived, so it is not a failure to report.
+case "$status" in
+	0) ;;
+	*)
+		case "$output" in
+			*"No reports found"*)
+				archive_reports
+				exit 0
+				;;
+		esac
+		;;
+esac
+
 if [ "$status" -eq 0 ]; then
+	archive_reports
 	exit 0
 fi
 
@@ -51,8 +114,14 @@ $output"
 
 if [ "${DRY_RUN:-0}" = 1 ]; then
 	printf 'would mail %s\n%s\n' "$MAIL_TO" "$message"
-	printf 'logged to %s\n' "$LOG"
+	printf 'would archive %s report(s) to %s\n' "$(grep -c . "$LIST" 2>/dev/null || echo 0)" "$ARCHIVE"
 	exit "$status"
+fi
+
+archive_reports
+if [ "$MOVED" -gt 0 ]; then
+	message="$message
+$MOVED report(s) moved to $ARCHIVE."
 fi
 
 sent=0

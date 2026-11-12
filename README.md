@@ -106,9 +106,13 @@ perl, which lacks `XML::LibXML`. Failures are always appended to
 needs `MAIL_COMMAND` set (anything reading a message with headers on stdin) or
 msmtp/ssmtp installed; until then the output is logged and printed to stderr.
 
-Reports are not moved after being read, so a directory that still holds last
-week's reports will report them again — clear it out or point `DMARC_DIR` at a
-directory you empty.
+Once summarised, a report is moved into `$DMARC_DIR/archive` (override with
+`DMARC_ARCHIVE_DIR`), so each week reports that week's mail rather than
+repeating last week's. Only the files the summariser actually read are moved —
+`dmarc-report.pl --file-list FILE` names them — so the installers and data sets
+sharing the directory stay put. A report fetched twice keeps both copies, the
+second renamed with a timestamp. `DMARC_ARCHIVE=0` turns archiving off; a run
+with nothing new exits 0 and says nothing.
 
 ## Tests
 
