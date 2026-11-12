@@ -318,7 +318,7 @@ dmarc-report - summarise DMARC aggregate reports and flag unexpected senders
 
 =head1 SYNOPSIS
 
-	dmarc-report [--dir DIR]... [--expected IP]...
+	dmarc-report [--dir DIR]... [--expected IP]... [--file-list FILE]
 
 	# only the reports of one domain, watching a different host
 	dmarc-report -d ~/Downloads -e 203.0.113.10
@@ -328,15 +328,15 @@ dmarc-report - summarise DMARC aggregate reports and flag unexpected senders
 
 =head1 DESCRIPTION
 
-Reads every C<*.xml>, C<*.xml.gz> and C<*.zip> file in each directory (the
-default is C<$HOME/Downloads>, or C<$DMARC_DIR> when that is set), prints the
-reporter, period, published policy and one line per source address, then the
-totals per source address for each domain, over all the reports together.
+Summarises DMARC aggregate reports and flags every message that came from an
+address other than the expected sender.
 
-The totals are kept per domain because the reports for several domains arrive
-at the same mailbox: an address that legitimately sends for one domain is not
-thereby legitimate for another, so adding the figures together would hide both
-a real sender and a real problem.
+DMARC reports arrive as XML, sometimes gzipped, sometimes zipped, and usually
+several at a time - the reports for C<bandsman.co.uk>, C<concert-bands.co.uk>,
+C<concert-bands.com> and C<nigelhorne.com> all land in the same mailbox.  This
+reads a whole directory, prints what each report says, then gives the totals
+per source address B<for each domain separately>, because an address that
+legitimately sends for one domain is not thereby legitimate for another.
 
 Pointing it at a downloads directory is safe: a file too large to be a report
 is never opened, and a file that does not contain a C<< <feedback> >> document
@@ -347,6 +347,90 @@ Any source address that is not one of the expected hosts is marked, and so is
 an expected host whose mail did not authenticate, since that is the case worth
 looking at: it means the host is sending but the signature or the SPF record
 is wrong.
+
+The totals are kept per domain because the reports for several domains arrive
+at the same mailbox: an address that legitimately sends for one domain is not
+thereby legitimate for another, so adding the figures together would hide both
+a real sender and a real problem.
+
+=head2 Running it
+
+	./dmarc-report.pl                                  # ~/Downloads, or $DMARC_DIR
+	./dmarc-report.pl -d ~/Downloads -d /var/reports/dmarc
+	./dmarc-report.pl -e 67.205.23.146 -e 203.0.113.10 # allow more than one sender
+	perldoc dmarc-report.pl                            # full options
+
+The expected sender defaults to C<67.205.23.146>, the DreamHost VPS that sends
+the sites' mail.  C<--dir> and C<--expected> can each be given more than once.
+
+Only C<*.xml>, C<*.xml.gz> and C<*.zip> are considered.  A file over 10 MB is
+never opened and a file that does not contain a C<< <feedback> >> document is
+skipped, so pointing it at a downloads directory full of installers and data
+sets costs nothing - it finishes in well under a second.
+
+=head2 Reading the output
+
+Per report first, one line per source address:
+
+	google.com!bandsman.co.uk!1794355200!1794441599.xml
+	  reporter : google.com   report_id: 9250231420970591661
+	  period   : 2026-11-11 00:00 UTC -> 2026-11-11 23:59 UTC
+	  domain   : bandsman.co.uk   p=none sp=none adkim=r aspf=r pct=100
+	  164.92.141.245       8  dkim=fail  spf=fail     none      from=bandsman.co.uk  <== NOT 67.205.23.146
+	      dkim seen: none
+	      spf  seen: bandsman.co.uk=softfail
+
+=over 4
+
+=item * C<domain> / C<p=> is the policy the receiving site applied, so C<p=none> means nothing was blocked and these figures are observation only.
+
+=item * C<dkim=> and C<spf=> are the verdicts DMARC made; C<dkim seen:> and C<spf seen:> are what the report says the message actually offered.
+
+=item * C<dkim seen: none> means the message carried no signature at all, which is a different problem from a signature that failed to verify.
+
+=back
+
+Then the totals, grouped by domain:
+
+	bandsman.co.uk: 4 message(s)
+	  source_ip        messages   passed   failed  status
+	  67.205.23.146           4        4        0  expected, authenticating
+	                     dkim: bandsman.co.uk/202611=pass
+
+	concert-bands.co.uk: 3 message(s), 1 not from 67.205.23.146
+	  source_ip        messages   passed   failed  status
+	  67.205.23.146           2        2        0  expected, authenticating
+	  198.51.100.9            1        0        1  UNEXPECTED SOURCE
+
+	nigelhorne.com: 1 message(s)
+	  source_ip        messages   passed   failed  status
+	  67.205.23.146           1        0        1  expected, failing auth
+
+The C<status> column is the thing to read; these are its values and their meaning:
+
+=over 4
+
+=item C<expected, authenticating> - the VPS sent it and DKIM or SPF passed, which is what you want
+
+=item C<expected, failing auth> - the VPS sent it, but the signature or SPF record did not hold up: the sending side is broken
+
+=item C<UNEXPECTED SOURCE> - something else sent as the domain: a forwarder, another mail client, or forgery
+
+=back
+
+The same address appears in each domain's block with that domain's own counts,
+never one merged figure.
+
+=head2 Exit status
+
+C<0> when every message came from an expected sender, C<1> when something else
+did, C<2> on a usage error, so it is safe in a cron job:
+
+	dmarc-report.pl -d /var/reports/dmarc || echo 'unexpected sender'
+
+C<expected, failing auth> does not by itself make it exit 1: it is a delivery
+problem on our side, not a foreign sender.  Errors (no reports found, a
+missing directory) exit non-zero with the reason on stderr.
 
 =head1 OPTIONS
 
@@ -374,9 +458,70 @@ Print this documentation.
 
 =back
 
-=head1 EXIT STATUS
+=head1 WEEKLY CHECK
 
-0 when every message came from an expected host and authenticated, 1 when
-something else did, 2 on a usage error.
+C<dmarc-weekly.sh> is the cron wrapper: silent when every message came from
+the expected sender, and otherwise a mail to C<alerts@bandsman.co.uk> with the
+full output.  It is installed in the crontab for Mondays at 06:17.
+
+	DRY_RUN=1 dmarc-weekly.sh     # show what would be mailed, send nothing
+
+It sets C<PERL> to the perlbrew perl because cron's C<PATH> has only the system
+perl, which lacks C<XML::LibXML>.  Failures are always appended to
+C<~/dmarc-report.log>.  There is no local MTA on this machine, so the mail step
+needs C<MAIL_COMMAND> set (anything reading a message with headers on stdin) or
+msmtp/ssmtp installed; until then the output is logged and printed to stderr.
+
+Once summarised, a report is moved into C<$HOME/dmarc-archive> (override with
+C<DMARC_ARCHIVE_DIR>), so each week reports that week's mail rather than
+repeating last week's, and nothing accumulates next to the downloads.  The
+archive lives outside C<DMARC_DIR> on purpose.
+
+Only the files the summariser actually read are moved - C<dmarc-report.pl
+--file-list FILE> names them - so the installers and data sets sharing the
+directory stay put.  A report fetched twice keeps both copies, the second
+renamed with a timestamp.  C<DMARC_ARCHIVE=0> turns archiving off; a run with
+nothing new exits 0 and says nothing.
+
+=head1 TESTS
+
+	prove t/            # or: prove -v t/dmarc-report.t
+
+The tests run the scripts as programs, because the exit status is half of what
+they check, and they build their fixtures in a temporary directory - no
+network, no real reports needed.
+
+C<t/dmarc-report.t> covers each of the three formats, a gzipped CSV and a
+B<3 GB sparse C<.zip>> that must be skipped in under two seconds, and the exit
+status for expected, failing and foreign senders.
+
+C<t/dmarc-weekly.t> covers what the wrapper does with the files, which is its
+own behaviour rather than the summariser's.  Each run gets its own C<HOME>, so
+the archive and log defaults land in the temporary directory:
+
+=over 4
+
+=item * a dry run moves nothing and creates no archive directory, on a week with a finding and on a clean one - the clean case is what once archived the lot
+
+=item * a repeat download is kept beside the first copy under a timestamp, not on top of it
+
+=item * an empty reports directory exits 0 without a word, while a missing one still fails and says why
+
+=item * a finding is mailed, and the mail says how many reports were archived.
+
+=back
+
+C<t/readme.t> runs pod2github over this file and fails if the committed
+README.md is not what it produces, so the two cannot drift apart.  Regenerate
+it with:
+
+	pod2github dmarc-report.pl > README.md
+
+The title in that output comes from C<.pod2github-header.md>, named by
+C<.pod2github.yml>: the generator shifts the POD headings down a level, which
+would otherwise leave the README with no H1 at all.
+
+Requires C<Test::Most>, C<XML::LibXML>, C<IO::Compress::{Gzip,Zip}>,
+C<IO::Uncompress::{Gunzip,Unzip}>, C<Readonly> and C<Time::HiRes>.
 
 =cut

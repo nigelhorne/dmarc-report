@@ -7,8 +7,10 @@
 # failure in LOG so the same information survives a week in which no mail
 # transport was available.
 #
-# The reports it summarised are then moved into the archive directory, so that
+# The reports it summarised are then moved into $HOME/dmarc-archive, so that
 # next week's run reports that week's mail rather than repeating last week's.
+# That is outside the reports directory on purpose: the directory is a downloads
+# folder, and an archive inside it is just more clutter there.
 # Only the files dmarc-report.pl says it read are moved: a downloads directory
 # also holds installers and data sets, and one of them is 13 GB.
 #
@@ -31,7 +33,7 @@ PERL=${PERL:-/home/njh/perl5/perlbrew/perls/perl-5.40.0/bin/perl}
 [ -x "$PERL" ] || PERL=perl
 
 REPORTS=${DMARC_DIR:-$HOME/Downloads}
-ARCHIVE=${DMARC_ARCHIVE_DIR:-$REPORTS/archive}
+ARCHIVE=${DMARC_ARCHIVE_DIR:-$HOME/dmarc-archive}
 MAIL_TO=${MAIL_TO:-alerts@bandsman.co.uk}
 LOG=${DMARC_LOG:-$HOME/dmarc-report.log}
 SUBJECT="DMARC: mail from an address that is not the VPS"
