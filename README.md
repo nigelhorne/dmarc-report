@@ -167,6 +167,140 @@ directory stay put.  A report fetched twice keeps both copies, the second
 renamed with a timestamp.  `DMARC_ARCHIVE=0` turns archiving off; a run with
 nothing new exits 0 and says nothing.
 
+## Cookbook: Trends Across Reporters
+
+`dmarc-report.pl` answers "is anything wrong this week".  `Database::BI`
+answers the questions that need several reports at once: whether Gmail and
+Outlook are seeing the same spoofing run, which addresses are new today,
+whether the quarantine share matches `pct`, and how the volume moved when the
+policy tightened.
+
+BI is a viewer for data files - CSV, SQLite, JSON, XML, XLSX - and it reads the
+file on every request, so there is no database to keep in step with anything.
+It does not understand the nesting of a DMARC report, so the first step is to
+flatten each report to one row per record.
+
+### Flattening the Reports
+
+Save this as `dmarc-to-csv.pl`.  It needs only `XML::LibXML`, which
+`dmarc-report.pl` needs anyway, and it uses `local-name()` so that a report
+with a namespace reads the same as one without:
+
+```perl
+    #!/usr/bin/env perl
+    use strict; use warnings;
+    use POSIX qw(strftime);
+    use XML::LibXML;
+
+    print join(',', qw(day org report_id domain policy pct begin end ip
+            messages disposition dkim spf header_from dkim_seen spf_seen file)), "\n";
+
+    sub text {
+            my ($node, $path) = @_;
+            my ($n) = $node->findnodes($path);
+            return defined($n) ? $n->textContent : '';
+    }
+
+    foreach my $file (@ARGV) {
+            my $doc = XML::LibXML->load_xml(location => $file);
+            my $org     = text($doc, '//*[local-name()="org_name"]');
+            my $id      = text($doc, '//*[local-name()="report_id"]');
+            my $domain  = text($doc, '//*[local-name()="policy_published"]/*[local-name()="domain"]');
+            my $policy  = text($doc, '//*[local-name()="policy_published"]/*[local-name()="p"]');
+            my $pct     = text($doc, '//*[local-name()="policy_published"]/*[local-name()="pct"]');
+            my $begin   = text($doc, '//*[local-name()="date_range"]/*[local-name()="begin"]');
+            my $end     = text($doc, '//*[local-name()="date_range"]/*[local-name()="end"]');
+            my $day     = ($begin =~ /\A\d+\z/) ? strftime('%Y-%m-%d', gmtime($begin)) : '';
+
+            foreach my $record ($doc->findnodes('//*[local-name()="record"]')) {
+                    my $ip  = text($record, './*[local-name()="row"]/*[local-name()="source_ip"]');
+                    my $n   = text($record, './*[local-name()="row"]/*[local-name()="count"]');
+                    my $dis = text($record, './*[local-name()="row"]/*[local-name()="policy_evaluated"]/*[local-name()="disposition"]');
+                    my $dk  = text($record, './*[local-name()="row"]/*[local-name()="policy_evaluated"]/*[local-name()="dkim"]');
+                    my $sp  = text($record, './*[local-name()="row"]/*[local-name()="policy_evaluated"]/*[local-name()="spf"]');
+                    my $from = text($record, './*[local-name()="identifiers"]/*[local-name()="header_from"]');
+                    my @dkim = map { $_->textContent } $record->findnodes('./*[local-name()="auth_results"]/*[local-name()="dkim"]/*[local-name()="result"]');
+                    my @spf  = map { $_->textContent } $record->findnodes('./*[local-name()="auth_results"]/*[local-name()="spf"]/*[local-name()="result"]');
+                    my $name = $file; $name =~ s{.*/}{};
+                    print join(',', $day, $org, $id, $domain, $policy, $pct, $begin, $end,
+                            $ip, $n, $dis, $dk, $sp, $from,
+                            join('|', @dkim), join('|', @spf), $name), "\n";
+            }
+    }
+```
+
+Run it over every report still on disc - the archive holds the older ones, so
+the file grows as the archive does:
+
+```
+    perl dmarc-to-csv.pl ~/dmarc-archive/*.xml ~/Downloads/*.xml > ~/dmarc-records.csv
+```
+
+One row per record, with the count in `messages`: `day`, `org`,
+`report_id`, `domain`, `policy`, `pct`, `begin`, `end`, `ip`,
+`messages`, `disposition`, `dkim`, `spf`, `header_from`, `dkim_seen`,
+`spf_seen`, `file`.  `day` is an ISO date rather than the epoch, because BI
+sorts and charts a column as dates when every cell is one.
+
+### Starting the Viewer
+
+```
+    cd /home/njh/src/njh/Database-BI
+    ./script/database-bi ~/dmarc-records.csv
+```
+
+Then open [http://127.0.0.1:3000/](http://127.0.0.1:3000/).  Start it from the root of the Database-BI
+distribution: the templates are loaded from `web/` relative to the current
+directory, so running the `database-bi` installed on `PATH` from somewhere
+else renders "Could not render a response" instead of a table.
+
+### Questions Worth Asking
+
+- Which reporters see the campaign?
+
+    Filter `org` to `google.com` and to `protection.outlook.com` in turn, or
+    pivot `org` against `day` summing `messages`.  Two reporters listing the same
+    address on the same day is the same run of mail reaching both, not two
+    separate ones.
+
+- Is our own mail getting through?
+
+    Filter `ip` to the expected sender, `67.205.23.146`.  Every row should have
+    `disposition` `none` and a passing `dkim` or `spf`.  If it shows
+    `quarantine`, the policy is catching your own mail and the record needs
+    changing back.
+
+- Is `pct` doing what it says?
+
+    Filter `disposition` to `quarantine` and compare its share of `messages`
+    with the `pct` in the same report.  The same address appearing with both
+    dispositions in one report is the sampling working as intended.
+
+- What is new?
+
+    Sort by `day`, then `ip`.  An address that appears under one day only is
+    either a one-off or a new sender; an address under several days is a campaign.
+
+- Who is sending most?
+
+    Pivot `ip` against `messages`, summed and sorted descending.
+
+With `day` as a date column, the line chart plots volume per reporter over
+time, a bar chart of `ip` summed by `messages` ranks the senders, and a pie
+of `disposition` shows the split the policy is producing.  Saved canvases keep
+a set of these together, and Merge and Combine join or stack another file - a
+list of addresses with their owners, say - against these rows.
+
+### What the Rows Cannot Tell You
+
+Reports contain every message the receiver evaluated, not only the ones it
+quarantined: `disposition` is what happened, and a report full of
+`quarantine` rows still describes mail that was delivered to a spam folder
+rather than refused.  A reporter that stops sending looks exactly like a quiet
+week, so absence of rows is worth noticing.  And the CSV is a snapshot: it is
+re-read on each request, but it does not refresh itself, so regenerate it after
+copying in a new report.
+
 ## Tests
 
 ```
