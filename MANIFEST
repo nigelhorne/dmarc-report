@@ -1,0 +1,17 @@
+.pod2github-header.md
+.pod2github.yml
+bin/dmarc-check-mail.pl
+bin/dmarc-report.pl
+bin/dmarc-weekly.sh
+bin/mail-dkim
+lib/Mail/Send/DKIM.pm
+LICENSE
+Makefile.PL
+MANIFEST
+MANIFEST.SKIP
+README.md
+share/crontab.example
+t/dmarc-report.t
+t/dmarc-weekly.t
+t/mail-dkim.t
+t/readme.t

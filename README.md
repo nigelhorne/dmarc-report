@@ -180,7 +180,14 @@ whenever suits.
 
 ```
     DRY_RUN=1 dmarc-weekly.sh     # show what would be mailed, send nothing
+    dmarc-weekly.sh --crontab     # print the line to paste into a crontab
 ```
+
+`--crontab` prints rather than installs: a ready-made line carrying the
+wrapper's absolute path and the `DMARC_EXPECTED`, `MAIL_TO` and `PERL`
+settings the run needs, because a crontab starts with almost no environment.
+`share/crontab.example` in the distribution is the same thing to read and
+adapt by hand.
 
 It puts `$HOME/perl5/perlbrew/perls/perl-5.40.0/bin/perl` first for `PERL`,
 falling back to `perl`, because cron's `PATH` often holds only a system perl

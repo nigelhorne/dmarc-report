@@ -1,0 +1,24 @@
+# DMARC weekly check, for `crontab -e`.
+#
+# `dmarc-weekly.sh --crontab` prints this same line with the paths and values
+# of the machine it is run on already filled in; this file is the version to
+# read and adapt by hand.
+#
+# The run is silent when the week is clean, and mails the full output when
+# something needs looking at or a report was filed by policy anyway.
+#
+# Three settings are not optional, because cron starts a job with almost no
+# environment:
+#
+#   DMARC_EXPECTED  the address or addresses expected to send as these domains,
+#                   separated by commas or spaces.  Without it the run stops
+#                   with a usage error, which is deliberate: guessing would
+#                   make every sender look expected.
+#   MAIL_TO         where a week that needs looking at is mailed.
+#   PERL            an absolute path to a perl that has XML::LibXML; cron's PATH
+#                   usually holds only the system perl, which does not.
+#
+# DMARC_DIR, DMARC_ARCHIVE_DIR and the log location have defaults (~/Downloads,
+# ~/dmarc-archive and ~/dmarc-report.log) and only need naming if they differ.
+
+0 6 * * 1 DMARC_EXPECTED=192.0.2.10 MAIL_TO=alerts@example.org PERL=/usr/bin/perl /usr/local/bin/dmarc-weekly.sh

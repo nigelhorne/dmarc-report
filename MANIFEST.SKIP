@@ -1,0 +1,12 @@
+^\.git/
+^\.gitignore$
+^\.github/
+^blib/
+^_build/
+^Build$
+^Makefile$
+^Makefile\.old$
+^MYMETA\.
+^pm_to_blib$
+^.*~$
+^.*\.bak$

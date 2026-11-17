@@ -562,6 +562,13 @@ full output.  It is meant to be installed in a crontab, on Monday mornings or
 whenever suits.
 
 	DRY_RUN=1 dmarc-weekly.sh     # show what would be mailed, send nothing
+	dmarc-weekly.sh --crontab     # print the line to paste into a crontab
+
+C<--crontab> prints rather than installs: a ready-made line carrying the
+wrapper's absolute path and the C<DMARC_EXPECTED>, C<MAIL_TO> and C<PERL>
+settings the run needs, because a crontab starts with almost no environment.
+F<share/crontab.example> in the distribution is the same thing to read and
+adapt by hand.
 
 It puts C<$HOME/perl5/perlbrew/perls/perl-5.40.0/bin/perl> first for C<PERL>,
 falling back to C<perl>, because cron's C<PATH> often holds only a system perl
