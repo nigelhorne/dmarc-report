@@ -14,14 +14,15 @@
 # Only the files dmarc-report.pl says it read are moved: a downloads directory
 # also holds installers and data sets, and one of them is 13 GB.
 #
-# Cron runs with almost no environment, so the perl that has XML::LibXML is
-# named explicitly instead of being found on PATH: the system perl does not
-# have it, and a job that fails for that reason would be silent.
+# Cron runs with almost no environment, so a perl that has XML::LibXML is
+# named explicitly instead of being found on PATH: a system perl often does not
+# have it, and a job that fails for that reason would be silent.  Set PERL to
+# choose your own, and DMARC_EXPECTED to the host that sends these domains.
 #
 # This machine has no local MTA (no mail, mailx, sendmail or msmtp), so out of
 # the box the message goes to the log.  Set MAIL_COMMAND to anything that reads
 # a message with headers on stdin, e.g.
-#	MAIL_COMMAND='ssh vps38148.dreamhostps.com /usr/sbin/sendmail -t'
+#	MAIL_COMMAND='ssh mail.example.com /usr/sbin/sendmail -t'
 # or install msmtp/ssmtp and it is picked up automatically.
 
 set -u
@@ -29,12 +30,12 @@ set -u
 SELF_DIR=$(cd "$(dirname "$0")" && pwd)
 REPORT="$SELF_DIR/dmarc-report.pl"
 
-PERL=${PERL:-/home/njh/perl5/perlbrew/perls/perl-5.40.0/bin/perl}
+PERL=${PERL:-$HOME/perl5/perlbrew/perls/perl-5.40.0/bin/perl}
 [ -x "$PERL" ] || PERL=perl
 
 REPORTS=${DMARC_DIR:-$HOME/Downloads}
 ARCHIVE=${DMARC_ARCHIVE_DIR:-$HOME/dmarc-archive}
-MAIL_TO=${MAIL_TO:-alerts@bandsman.co.uk}
+MAIL_TO=${MAIL_TO:-alerts@example.org}
 LOG=${DMARC_LOG:-$HOME/dmarc-report.log}
 SUBJECT="DMARC: mail that needs looking at"
 
@@ -109,8 +110,9 @@ printf '%s  %s  exit %s\n%s\n\n' "$(date '+%Y-%m-%d %H:%M')" "$REPORTS" "$status
 message="DMARC check of $REPORTS at $(date '+%Y-%m-%d %H:%M') exited $status.
 
 Addresses that are not the expected sender are marked UNEXPECTED SOURCE.
-'expected, failing auth' is different: the VPS sent it, but its signature or
-SPF record did not hold up, and that is a sending problem on our side.
+'expected, failing auth' is different: an expected host sent it, but its
+signature or SPF record did not hold up, and that is a sending problem on our
+side.
 A message marked 'authenticated, but quarantined' passed DKIM or SPF and was
 filed anyway, and 'expected sender, quarantined' means our own mail is being
 filed; both are listed again under 'Filed by policy'.

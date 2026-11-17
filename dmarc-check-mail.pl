@@ -10,12 +10,12 @@
 # cron does, so both outcomes can be seen in the same mailbox.
 #
 # Usage:
-#	dmarc-check-mail.pl                     # sign and send to Nigel's Gmail
+#	dmarc-check-mail.pl                     # sign and send to DMARC_TEST_TO
 #	dmarc-check-mail.pl --dry-run           # sign, print the message, send nothing
 #	dmarc-check-mail.pl --plain             # unsigned, the way cron sends
-#	dmarc-check-mail.pl --keyfile ~/dkim/202611.private
+#	dmarc-check-mail.pl --keyfile ~/dkim/selector1.private
 #
-# The message carries a token in the subject and body; find it in Gmail, choose
+# The message carries a token in the subject and body; find it in the mailbox, choose
 # "Show original", and read the Authentication-Results header.
 
 use strict;
@@ -28,10 +28,10 @@ use POSIX qw(strftime);
 use Sys::Hostname qw(hostname);
 
 my %opt = (
-	'to' => $ENV{'DMARC_TEST_TO'} || 'nigel.horne@gmail.com',
-	'from' => $ENV{'DMARC_TEST_FROM'} || 'alerts@bandsman.co.uk',
-	'domain' => $ENV{'DMARC_TEST_DOMAIN'} || 'bandsman.co.uk',
-	'selector' => $ENV{'DMARC_TEST_SELECTOR'} || '202611',
+	'to' => $ENV{'DMARC_TEST_TO'} || 'nigel@example.org',
+	'from' => $ENV{'DMARC_TEST_FROM'} || 'alerts@example.org',
+	'domain' => $ENV{'DMARC_TEST_DOMAIN'} || 'example.org',
+	'selector' => $ENV{'DMARC_TEST_SELECTOR'} || 'selector1',
 	'sendmail' => $ENV{'SENDMAIL'} || '/usr/sbin/sendmail',
 	'keyfile' => $ENV{'DKIM_KEYFILE'},
 	'plain' => 0,
@@ -137,7 +137,7 @@ unless(close($sendmail)) {
 print "Sent to $opt{'to'} as $opt{'from'}\n";
 print "  via       : $mailer\n";
 print "  token     : $token\n\n";
-print "In Gmail, open that message and choose \"Show original\".  You want:\n";
+print "In the mailbox, open that message and choose \"Show original\".  You want:\n";
 print "  SPF:   pass  (ip= the sending host)\n";
 print "  DKIM:  pass  (domain=$opt{'domain'}, selector=$opt{'selector'})\n";
 print "  DMARC: pass\n\n";

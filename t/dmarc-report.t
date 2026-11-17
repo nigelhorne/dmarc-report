@@ -13,7 +13,7 @@ use IO::Compress::Zip qw(zip $ZipError);
 use Time::HiRes qw(time);
 
 my $SCRIPT = File::Spec->catfile(dirname(File::Spec->rel2abs($0)), File::Spec->updir(), 'dmarc-report.pl');
-my $VPS = '67.205.23.146';
+my $EXPECTED = '192.0.2.10';
 
 BAIL_OUT("Cannot find $SCRIPT") unless(-r $SCRIPT);
 
@@ -46,6 +46,10 @@ sub run_script
 	if(!$pid) {
 		open(STDOUT, '>', $out) or exit 127;
 		open(STDERR, '>', $err) or exit 127;
+		# There is no built-in expected sender, so the default comes from the
+		# environment; an explicit -e in @args still wins over it, and a test
+		# that sets this to '' leaves the tool with nothing configured.
+		$ENV{'DMARC_EXPECTED'} //= $EXPECTED;
 		exec($^X, $SCRIPT, @args) or exit 127;
 	}
 
@@ -60,7 +64,7 @@ sub report_xml
 	my (%args) = @_;
 
 	my $domain = $args{'domain'};
-	my $ip = $args{'ip'} // $VPS;
+	my $ip = $args{'ip'} // $EXPECTED;
 	my $count = $args{'count'} // 1;
 	my $dkim = $args{'dkim'} // 'pass';
 	my $spf = $args{'spf'} // 'pass';
@@ -85,7 +89,7 @@ sub report_xml
   </row>
   <identifiers><header_from>$domain</header_from></identifiers>
   <auth_results>
-   <dkim><domain>$domain</domain><selector>202611</selector><result>$dkim</result></dkim>
+   <dkim><domain>$domain</domain><selector>selector1</selector><result>$dkim</result></dkim>
    <spf><domain>$domain</domain><result>$spf</result></spf>
   </auth_results>
  </record>
@@ -122,9 +126,9 @@ $main::TMP = tempdir(CLEANUP => 1);
 
 subtest 'each report format is read' => sub {
 	my @cases = (
-		['a.xml', 'xml', 'bandsman.co.uk', 4],
-		['b.xml.gz', 'gz', 'concert-bands.co.uk', 2],
-		['c.zip', 'zip', 'nigelhorne.com', 3],
+		['a.xml', 'xml', 'example.org', 4],
+		['b.xml.gz', 'gz', 'example.net', 2],
+		['c.zip', 'zip', 'example.com', 3],
 	);
 
 	my $messages = 0;
@@ -151,7 +155,7 @@ subtest 'each report format is read' => sub {
 		}
 
 		my ($status, $out, $err) = run_script('-d', $dir);
-		is($status, 0, "$format: exits 0 when only the VPS sent");
+		is($status, 0, "$format: exits 0 when only the expected host sent");
 		like($out, qr/Totals over 1 report\(s\): 1 record\(s\), $count message\(s\)/,
 			"$format: the report was read and counted");
 		like($out, qr/\Q$domain\E: \Q$count\E message\(s\)/, "$format: grouped under $domain");
@@ -165,7 +169,7 @@ subtest 'a non-report .gz and a multi-gigabyte .zip are skipped quickly' => sub 
 	my $dir = File::Spec->catdir($main::TMP, 'junk');
 	mkdir($dir) or die "Cannot mkdir $dir: $!";
 
-	write_file(File::Spec->catfile($dir, 'real.xml'), report_xml(name => 'real.xml', domain => 'bandsman.co.uk', count => 5));
+	write_file(File::Spec->catfile($dir, 'real.xml'), report_xml(name => 'real.xml', domain => 'example.org', count => 5));
 
 	# The shape that bit us: a data set that happens to be gzipped.  It is
 	# small, so only the "is it a <feedback> document" check can reject it.
@@ -190,10 +194,10 @@ subtest 'a non-report .gz and a multi-gigabyte .zip are skipped quickly' => sub 
 	my ($status, $out, $err) = run_script('-d', $dir);
 	my $elapsed = time() - $started;
 
-	is($status, 0, 'exits 0: the only report came from the VPS');
+	is($status, 0, 'exits 0: the only report came from the expected host');
 	cmp_ok($elapsed, '<', 2, "finished in ${elapsed}s, so neither file was read");
 	like($out, qr/Totals over 1 report\(s\)/, 'only the real report was counted');
-	like($out, qr/bandsman\.co\.uk: 5 message\(s\)/, 'the real report was summarised');
+	like($out, qr/example\.org: 5 message\(s\)/, 'the real report was summarised');
 	unlike($out, qr/openaddr|worldcitiespop|notreally/, 'no non-report appears in the output');
 	is($err, '', 'skipping them is not worth a warning');
 };
@@ -201,16 +205,16 @@ subtest 'a non-report .gz and a multi-gigabyte .zip are skipped quickly' => sub 
 subtest 'exit status reflects only whether a source is unexpected' => sub {
 	my $clean = File::Spec->catdir($main::TMP, 'clean');
 	mkdir($clean) or die "Cannot mkdir $clean: $!";
-	write_file(File::Spec->catfile($clean, 'ok.xml'), report_xml(name => 'ok.xml', domain => 'bandsman.co.uk', count => 7));
+	write_file(File::Spec->catfile($clean, 'ok.xml'), report_xml(name => 'ok.xml', domain => 'example.org', count => 7));
 	my ($status) = run_script('-d', $clean);
-	is($status, 0, 'all from the VPS: exit 0');
+	is($status, 0, 'all from the expected host: exit 0');
 
 	# Expected host, failing both checks: a problem, but not a different sender,
 	# so the exit status stays 0 and the line says which it is.
 	my $failing = File::Spec->catdir($main::TMP, 'failing');
 	mkdir($failing) or die "Cannot mkdir $failing: $!";
 	write_file(File::Spec->catfile($failing, 'fail.xml'),
-		report_xml(name => 'fail.xml', domain => 'nigelhorne.com', count => 2, dkim => 'fail', spf => 'fail'));
+		report_xml(name => 'fail.xml', domain => 'example.com', count => 2, dkim => 'fail', spf => 'fail'));
 	my ($fail_status, $fail_out) = run_script('-d', $failing);
 	is($fail_status, 0, 'expected host failing auth: still exit 0');
 	like($fail_out, qr/expected, failing auth/, 'and said so');
@@ -218,15 +222,15 @@ subtest 'exit status reflects only whether a source is unexpected' => sub {
 	my $bad = File::Spec->catdir($main::TMP, 'bad');
 	mkdir($bad) or die "Cannot mkdir $bad: $!";
 	write_file(File::Spec->catfile($bad, 'bad.xml'),
-		report_xml(name => 'bad.xml', domain => 'bandsman.co.uk', ip => '203.0.113.7', count => 3, dkim => 'fail', spf => 'fail'));
+		report_xml(name => 'bad.xml', domain => 'example.org', ip => '203.0.113.7', count => 3, dkim => 'fail', spf => 'fail'));
 	my ($bad_status, $bad_out) = run_script('-d', $bad);
-	is($bad_status, 1, 'a source that is not the VPS: exit 1');
-	like($bad_out, qr/203\.0\.113\.7.*NOT $VPS/, 'the line says which address it is');
-	like($bad_out, qr/3 message\(s\) came from addresses that are not $VPS/, 'and how many');
+	is($bad_status, 1, 'a source that is not the expected host: exit 1');
+	like($bad_out, qr/203\.0\.113\.7.*NOT $EXPECTED/, 'the line says which address it is');
+	like($bad_out, qr/3 message\(s\) came from addresses that are not $EXPECTED/, 'and how many');
 
 	# A different host can be allowed explicitly, which is how a second sender
 	# or a migration is tested before it is believed.
-	my ($allowed_status) = run_script('-d', $bad, '-e', $VPS, '-e', '203.0.113.7');
+	my ($allowed_status) = run_script('-d', $bad, '-e', $EXPECTED, '-e', '203.0.113.7');
 	is($allowed_status, 0, 'the same messages exit 0 when the address is allowed');
 };
 
@@ -237,32 +241,32 @@ subtest 'totals are kept per domain, not merged across domains' => sub {
 	# The same host sends for two domains, in different volumes, which is the
 	# case that used to be added into a single figure.  One domain also has a
 	# sender of its own, to show that does not leak into the other's block.
-	write_file(File::Spec->catfile($dir, 'a-bandsman.xml'),
-		report_xml(name => 'a-bandsman.xml', domain => 'bandsman.co.uk', count => 4));
+	write_file(File::Spec->catfile($dir, 'a-example.xml'),
+		report_xml(name => 'a-example.xml', domain => 'example.org', count => 4));
 	write_file(File::Spec->catfile($dir, 'b-concert.xml'),
-		report_xml(name => 'b-concert.xml', domain => 'concert-bands.co.uk', count => 2));
+		report_xml(name => 'b-concert.xml', domain => 'example.net', count => 2));
 	write_file(File::Spec->catfile($dir, 'c-concert-other.xml'),
-		report_xml(name => 'c-concert-other.xml', domain => 'concert-bands.co.uk',
+		report_xml(name => 'c-concert-other.xml', domain => 'example.net',
 			ip => '198.51.100.9', count => 1, dkim => 'fail', spf => 'fail'));
 
 	my ($status, $out) = run_script('-d', $dir);
 	is($status, 1, 'the foreign address in one domain still makes it exit 1');
 
 	my %blocks = domain_blocks($out);
-	ok($blocks{'bandsman.co.uk'}, 'bandsman.co.uk has a block of its own');
-	ok($blocks{'concert-bands.co.uk'}, 'concert-bands.co.uk has a block of its own');
+	ok($blocks{'example.org'}, 'example.org has a block of its own');
+	ok($blocks{'example.net'}, 'example.net has a block of its own');
 
-	like($blocks{'bandsman.co.uk'}, qr/67\.205\.23\.146\s+4\s+4\s+0/,
-		'the VPS under bandsman with its own count of 4');
-	like($blocks{'concert-bands.co.uk'}, qr/67\.205\.23\.146\s+2\s+2\s+0/,
-		'the same VPS under concert-bands with its own count of 2');
-	unlike($blocks{'bandsman.co.uk'}, qr/67\.205\.23\.146\s+6\b/,
-		'bandsman does not show the two domains added together');
-	unlike($blocks{'bandsman.co.uk'}, qr/198\.51\.100\.9/,
+	like($blocks{'example.org'}, qr/192\.0\.2\.10\s+4\s+4\s+0/,
+		'the expected host under example.org with its own count of 4');
+	like($blocks{'example.net'}, qr/192\.0\.2\.10\s+2\s+2\s+0/,
+		'the same host under example.net with its own count of 2');
+	unlike($blocks{'example.org'}, qr/192\.0\.2\.10\s+6\b/,
+		'example.org does not show the two domains added together');
+	unlike($blocks{'example.org'}, qr/198\.51\.100\.9/,
 		"one domain's foreign sender stays out of the other's block");
 
-	like($out, qr/^bandsman\.co\.uk: 4 message\(s\)/m, 'bandsman heading counts only its own mail');
-	like($out, qr/^concert-bands\.co\.uk: 3 message\(s\), 1 not from/m,
+	like($out, qr/^example\.org: 4 message\(s\)/m, 'its heading counts only its own mail');
+	like($out, qr/^example\.net: 3 message\(s\), 1 not from/m,
 		'concert heading counts its own and names the foreign one');
 };
 
@@ -273,9 +277,9 @@ subtest 'the reports it read can be listed for archiving' => sub {
 	# Two real reports and two things that are not: the list has to name the
 	# reports so that moving them aside cannot touch anything else.
 	write_file(File::Spec->catfile($dir, 'one.xml'),
-		report_xml(name => 'one.xml', domain => 'bandsman.co.uk'));
+		report_xml(name => 'one.xml', domain => 'example.org'));
 	my $source = File::Spec->catfile($main::TMP, 'listed-source.xml');
-	write_file($source, report_xml(name => 'two.xml', domain => 'concert-bands.co.uk'));
+	write_file($source, report_xml(name => 'two.xml', domain => 'example.net'));
 	zip($source => File::Spec->catfile($dir, 'two.zip')) or die "zip: $ZipError";
 
 	my $csv = File::Spec->catfile($main::TMP, 'listed.csv');
@@ -303,15 +307,15 @@ subtest 'a message quarantined or rejected that should not have been is flagged'
 	my $own = File::Spec->catdir($main::TMP, 'filed-own');
 	mkdir($own) or die "Cannot mkdir $own: $!";
 	write_file(File::Spec->catfile($own, 'own-quarantined.xml'),
-		report_xml(name => 'own-quarantined.xml', domain => 'nigelhorne.com',
-			ip => $VPS, count => 2, dkim => 'fail', spf => 'fail', disposition => 'quarantine'));
+		report_xml(name => 'own-quarantined.xml', domain => 'example.com',
+			ip => $EXPECTED, count => 2, dkim => 'fail', spf => 'fail', disposition => 'quarantine'));
 	my ($own_status, $own_out, $own_err) = run_script('-d', $own);
 	is($own_status, 1, 'the expected host being quarantined fails the run');
-	like($own_out, qr/\Q$VPS\E.*expected host, not authenticating; expected sender, quarantined/,
+	like($own_out, qr/\Q$EXPECTED\E.*expected host, not authenticating; expected sender, quarantined/,
 		'the record line says both things');
 	like($own_out, qr/^Filed by policy although it should not have been: 2 message\(s\)/m,
 		'the summary counts them');
-	like($own_out, qr/^  nigelhorne\.com\s+\Q$VPS\E\s+quarantine\s+2\s+expected sender, yet quarantined/m,
+	like($own_out, qr/^  example\.com\s+\Q$EXPECTED\E\s+quarantine\s+2\s+expected sender, yet quarantined/m,
 		'and names the address under its domain');
 	is($own_err, '', 'nothing on stderr');
 
@@ -319,11 +323,11 @@ subtest 'a message quarantined or rejected that should not have been is flagged'
 	my $rej = File::Spec->catdir($main::TMP, 'filed-reject');
 	mkdir($rej) or die "Cannot mkdir $rej: $!";
 	write_file(File::Spec->catfile($rej, 'own-rejected.xml'),
-		report_xml(name => 'own-rejected.xml', domain => 'bandsman.co.uk',
-			ip => $VPS, count => 3, dkim => 'fail', spf => 'pass', disposition => 'reject'));
+		report_xml(name => 'own-rejected.xml', domain => 'example.org',
+			ip => $EXPECTED, count => 3, dkim => 'fail', spf => 'pass', disposition => 'reject'));
 	my ($rej_status, $rej_out) = run_script('-d', $rej);
 	is($rej_status, 1, 'a rejection fails the run too');
-	like($rej_out, qr/\Q$VPS\E.*expected sender, rejected though authenticated/,
+	like($rej_out, qr/\Q$EXPECTED\E.*expected sender, rejected though authenticated/,
 		'the record line says rejected, and that it authenticated')
 		or diag($rej_out);
 	like($rej_out, qr/expected sender, and authenticated, yet rejected/, 'the summary uses the right word');
@@ -333,12 +337,12 @@ subtest 'a message quarantined or rejected that should not have been is flagged'
 	my $auth = File::Spec->catdir($main::TMP, 'filed-auth');
 	mkdir($auth) or die "Cannot mkdir $auth: $!";
 	write_file(File::Spec->catfile($auth, 'auth-quarantined.xml'),
-		report_xml(name => 'auth-quarantined.xml', domain => 'bandsman.co.uk',
+		report_xml(name => 'auth-quarantined.xml', domain => 'example.org',
 			ip => '198.51.100.7', count => 4, dkim => 'pass', spf => 'fail', disposition => 'quarantine'));
 	my ($auth_status, $auth_out) = run_script('-d', $auth);
 	is($auth_status, 1, 'a passing sender being quarantined fails the run');
 	like($auth_out, qr/198\.51\.100\.7.*authenticated, but quarantined/, 'the record line says so');
-	like($auth_out, qr/^  bandsman\.co\.uk\s+198\.51\.100\.7\s+quarantine\s+4\s+authenticated, yet quarantined/m,
+	like($auth_out, qr/^  example\.org\s+198\.51\.100\.7\s+quarantine\s+4\s+authenticated, yet quarantined/m,
 		'and the summary names it');
 
 	# The case the check must not cry about: forged mail that failed both
@@ -347,23 +351,23 @@ subtest 'a message quarantined or rejected that should not have been is flagged'
 	my $spam = File::Spec->catdir($main::TMP, 'filed-spam');
 	mkdir($spam) or die "Cannot mkdir $spam: $!";
 	write_file(File::Spec->catfile($spam, 'spam-quarantined.xml'),
-		report_xml(name => 'spam-quarantined.xml', domain => 'bandsman.co.uk',
+		report_xml(name => 'spam-quarantined.xml', domain => 'example.org',
 			ip => '203.0.113.9', count => 6, dkim => 'fail', spf => 'fail', disposition => 'quarantine'));
 	my ($spam_status, $spam_out) = run_script('-d', $spam);
 	is($spam_status, 1, 'a forged sender still fails the run, as it always did');
 	unlike($spam_out, qr/Filed by policy/, 'but quarantining it is not reported as misfiled');
-	like($spam_out, qr/6 message\(s\) came from addresses that are not \Q$VPS\E/,
+	like($spam_out, qr/6 message\(s\) came from addresses that are not \Q$EXPECTED\E/,
 		'it is reported as an unexpected sender instead');
 
 	# Nothing quarantined at all: the new check stays out of the way.
 	my $clean = File::Spec->catdir($main::TMP, 'filed-clean');
 	mkdir($clean) or die "Cannot mkdir $clean: $!";
 	write_file(File::Spec->catfile($clean, 'delivered.xml'),
-		report_xml(name => 'delivered.xml', domain => 'bandsman.co.uk', ip => $VPS, count => 5));
+		report_xml(name => 'delivered.xml', domain => 'example.org', ip => $EXPECTED, count => 5));
 	my ($clean_status, $clean_out) = run_script('-d', $clean);
 	is($clean_status, 0, 'a clean run still exits 0');
 	unlike($clean_out, qr/Filed by policy/, 'and says nothing about filed mail');
-	like($clean_out, qr/Every message came from \Q$VPS\E, and none was filed by policy/,
+	like($clean_out, qr/Every message came from \Q$EXPECTED\E, and none was filed by policy/,
 		'and the closing line says it is clean');
 };
 
@@ -379,6 +383,19 @@ subtest 'an empty directory and a bad directory are errors' => sub {
 	($status, $out, $err) = run_script('-d', File::Spec->catdir($main::TMP, 'no-such-directory'));
 	cmp_ok($status, '>', 0, 'a missing directory is a failure');
 	like($err, qr/Not a directory/, 'and it says so');
+};
+
+subtest 'with no expected sender it stops with a usage error' => sub {
+	# '' and not a real address: run_script only fills in the default when the
+	# variable is unset, so this is the path with nothing configured at all.
+	local $ENV{'DMARC_EXPECTED'} = '';
+	my ($status, $out, $err) = run_script('-d', $main::TMP);
+
+	is($status, 2, 'exit 2, so a cron job can tell it from a finding');
+	is($out, '', 'nothing on stdout');
+	like($err, qr/No expected sender/, 'the reason is on stderr');
+	like($err, qr/--expected/, 'and names the option');
+	like($err, qr/DMARC_EXPECTED/, 'and the environment variable');
 };
 
 done_testing();

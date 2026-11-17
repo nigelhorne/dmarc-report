@@ -17,7 +17,7 @@ use File::Spec;
 use File::Temp qw(tempdir);
 
 my $WRAPPER = File::Spec->catfile(dirname(File::Spec->rel2abs($0)), File::Spec->updir(), 'dmarc-weekly.sh');
-my $VPS = '67.205.23.146';
+my $EXPECTED = '192.0.2.10';
 
 BAIL_OUT("Cannot find $WRAPPER") unless(-x $WRAPPER);
 
@@ -50,7 +50,7 @@ sub report_xml
 	my (%args) = @_;
 
 	my $domain = $args{'domain'};
-	my $ip = $args{'ip'} // $VPS;
+	my $ip = $args{'ip'} // $EXPECTED;
 	my $count = $args{'count'} // 1;
 
 	return <<XML;
@@ -72,7 +72,7 @@ sub report_xml
   </row>
   <identifiers><header_from>$domain</header_from></identifiers>
   <auth_results>
-   <dkim><domain>$domain</domain><selector>202611</selector><result>pass</result></dkim>
+   <dkim><domain>$domain</domain><selector>selector1</selector><result>pass</result></dkim>
    <spf><domain>$domain</domain><result>pass</result></spf>
   </auth_results>
  </record>
@@ -96,6 +96,7 @@ sub run_wrapper
 	my %set = (
 		HOME => $main::HOME,
 		PERL => $^X,
+		DMARC_EXPECTED => $EXPECTED,
 		DMARC_LOG => File::Spec->catfile($main::HOME, 'dmarc-report.log'),
 		MAIL_COMMAND => "cat > $mail",
 		%env,
@@ -156,9 +157,9 @@ subtest 'a dry run moves nothing' => sub {
 	# A week with a finding, so the run has something it would archive and
 	# something it would say.
 	my $dir = reports_dir('dry-dirty');
-	write_file(File::Spec->catfile($dir, 'ok.xml'), report_xml(name => 'ok.xml', domain => 'bandsman.co.uk'));
+	write_file(File::Spec->catfile($dir, 'ok.xml'), report_xml(name => 'ok.xml', domain => 'example.org'));
 	write_file(File::Spec->catfile($dir, 'bad.xml'),
-		report_xml(name => 'bad.xml', domain => 'bandsman.co.uk', ip => '203.0.113.7', count => 3));
+		report_xml(name => 'bad.xml', domain => 'example.org', ip => '203.0.113.7', count => 3));
 
 	my ($status, $out, $err) = run_wrapper(HOME => $home, DMARC_DIR => $dir, DRY_RUN => 1);
 	is($status, 1, 'the finding still sets the exit status');
@@ -171,7 +172,7 @@ subtest 'a dry run moves nothing' => sub {
 	# report, the wrapper returned before consulting DRY_RUN and archived the
 	# lot anyway.
 	my $clean = reports_dir('dry-clean');
-	write_file(File::Spec->catfile($clean, 'ok.xml'), report_xml(name => 'ok.xml', domain => 'bandsman.co.uk'));
+	write_file(File::Spec->catfile($clean, 'ok.xml'), report_xml(name => 'ok.xml', domain => 'example.org'));
 
 	($status, $out, $err) = run_wrapper(HOME => $home, DMARC_DIR => $clean, DRY_RUN => 1);
 	is($status, 0, 'a clean week in rehearsal exits 0');
@@ -208,7 +209,7 @@ subtest 'a repeat download keeps both copies' => sub {
 	my $ARCHIVE = File::Spec->catdir($home, 'dmarc-archive');
 	my $dir = reports_dir('repeat');
 	my $report = File::Spec->catfile($dir, 'a.xml');
-	write_file($report, report_xml(name => 'a.xml', domain => 'bandsman.co.uk', count => 4));
+	write_file($report, report_xml(name => 'a.xml', domain => 'example.org', count => 4));
 
 	my ($status) = run_wrapper(HOME => $home, DMARC_DIR => $dir);
 	is($status, 0, 'first week is clean');
@@ -216,7 +217,7 @@ subtest 'a repeat download keeps both copies' => sub {
 
 	# The same report fetched again, which happens when a reporter resends or a
 	# download is repeated.  It must not overwrite the copy already there.
-	write_file($report, report_xml(name => 'a.xml', domain => 'bandsman.co.uk', count => 9));
+	write_file($report, report_xml(name => 'a.xml', domain => 'example.org', count => 9));
 	($status) = run_wrapper(HOME => $home, DMARC_DIR => $dir);
 	is($status, 0, 'second week is clean too');
 
@@ -238,7 +239,7 @@ subtest 'a finding is mailed, and names the archive' => sub {
 	my $ARCHIVE = File::Spec->catdir($home, 'dmarc-archive');
 	my $dir = reports_dir('finding');
 	write_file(File::Spec->catfile($dir, 'bad.xml'),
-		report_xml(name => 'bad.xml', domain => 'bandsman.co.uk', ip => '203.0.113.7', count => 3));
+		report_xml(name => 'bad.xml', domain => 'example.org', ip => '203.0.113.7', count => 3));
 
 	my ($status, $out, $err, $mail) = run_wrapper(HOME => $home, DMARC_DIR => $dir);
 	is($status, 1, 'exits 1');

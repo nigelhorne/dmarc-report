@@ -22,8 +22,8 @@ Summarises DMARC aggregate reports and flags every message that came from an
 address other than the expected sender.
 
 DMARC reports arrive as XML, sometimes gzipped, sometimes zipped, and usually
-several at a time - the reports for `bandsman.co.uk`, `concert-bands.co.uk`,
-`concert-bands.com` and `nigelhorne.com` all land in the same mailbox.  This
+several at a time - the reports for `example.org`, `example.net` and
+`example.com` all land in the same mailbox.  This
 reads a whole directory, prints what each report says, then gives the totals
 per source address **for each domain separately**, because an address that
 legitimately sends for one domain is not thereby legitimate for another.
@@ -55,12 +55,13 @@ a real sender and a real problem.
 ```
     ./dmarc-report.pl                                  # ~/Downloads, or $DMARC_DIR
     ./dmarc-report.pl -d ~/Downloads -d /var/reports/dmarc
-    ./dmarc-report.pl -e 67.205.23.146 -e 203.0.113.10 # allow more than one sender
+    ./dmarc-report.pl -e 192.0.2.10 -e 203.0.113.10    # allow more than one sender
     perldoc dmarc-report.pl                            # full options
 ```
 
-The expected sender defaults to `67.205.23.146`, the DreamHost VPS that sends
-the sites' mail.  `--dir` and `--expected` can each be given more than once.
+There is no built-in expected sender: give `--expected`, or set
+`DMARC_EXPECTED` to one or more addresses separated by commas or spaces.
+`--dir` and `--expected` can each be given more than once.
 
 Only `*.xml`, `*.xml.gz` and `*.zip` are considered.  A file over 10 MB is
 never opened and a file that does not contain a `<feedback>` document is
@@ -72,13 +73,13 @@ sets costs nothing - it finishes in well under a second.
 Per report first, one line per source address:
 
 ```
-    google.com!bandsman.co.uk!1794355200!1794441599.xml
+    google.com!example.org!1794355200!1794441599.xml
       reporter : google.com   report_id: 9250231420970591661
       period   : 2026-11-11 00:00 UTC -> 2026-11-11 23:59 UTC
-      domain   : bandsman.co.uk   p=none sp=none adkim=r aspf=r pct=100
-      164.92.141.245       8  dkim=fail  spf=fail     none      from=bandsman.co.uk  <== NOT 67.205.23.146
+      domain   : example.org   p=none sp=none adkim=r aspf=r pct=100
+      198.51.100.23        8  dkim=fail  spf=fail     none      from=example.org  <== NOT 192.0.2.10
           dkim seen: none
-          spf  seen: bandsman.co.uk=softfail
+          spf  seen: example.org=softfail
 ```
 
 - `domain` / `p=` is the policy the receiving site applied, so `p=none` means nothing was blocked and these figures are observation only.
@@ -90,25 +91,25 @@ Per report first, one line per source address:
 Then the totals, grouped by domain:
 
 ```
-    bandsman.co.uk: 4 message(s)
+    example.org: 4 message(s)
       source_ip        messages   passed   failed  status
-      67.205.23.146           4        4        0  expected, authenticating
-                         dkim: bandsman.co.uk/202611=pass
+      192.0.2.10              4        4        0  expected, authenticating
+                         dkim: example.org/selector1=pass
 
-    concert-bands.co.uk: 3 message(s), 1 not from 67.205.23.146
+    example.net: 3 message(s), 1 not from 192.0.2.10
       source_ip        messages   passed   failed  status
-      67.205.23.146           2        2        0  expected, authenticating
+      192.0.2.10              2        2        0  expected, authenticating
       198.51.100.9            1        0        1  UNEXPECTED SOURCE
 
-    nigelhorne.com: 1 message(s)
+    example.com: 1 message(s)
       source_ip        messages   passed   failed  status
-      67.205.23.146           1        0        1  expected, failing auth
+      192.0.2.10              1        0        1  expected, failing auth
 ```
 
 The `status` column is the thing to read; these are its values and their meaning:
 
-- `expected, authenticating` - the VPS sent it and DKIM or SPF passed, which is what you want
-- `expected, failing auth` - the VPS sent it, but the signature or SPF record did not hold up: the sending side is broken
+- `expected, authenticating` - an expected host sent it and DKIM or SPF passed, which is what you want
+- `expected, failing auth` - an expected host sent it, but the signature or SPF record did not hold up: the sending side is broken
 - `UNEXPECTED SOURCE` - something else sent as the domain: a forwarder, another mail client, or forgery
 
 The same address appears in each domain's block with that domain's own counts,
@@ -121,7 +122,7 @@ should not have been:
     ==============================================================================
     Filed by policy although it should not have been: 4 message(s)
       domain                 source_ip        disposition  messages  why
-      bandsman.co.uk         198.51.100.7     quarantine          4  authenticated, yet quarantined (dkim=pass spf=fail)
+      example.org             198.51.100.7     quarantine          4  authenticated, yet quarantined (dkim=pass spf=fail)
 
     4 message(s) were quarantined or rejected although they should not have been.
 ```
@@ -154,7 +155,9 @@ missing directory) exit non-zero with the reason on stderr.
 - **--expected**, **-e** IP
 
     A host that is allowed to send as these domains.  May be given more than
-    once.  Defaults to `67.205.23.146`, the VPS that sends the sites' mail.
+    once.  Defaults to the addresses in `DMARC_EXPECTED`, separated by commas or
+    spaces; if neither is given the tool stops with a usage error rather than
+    guess which host is meant.
 
 - **--file-list** FILE
 
@@ -171,14 +174,19 @@ missing directory) exit non-zero with the reason on stderr.
 
 `dmarc-weekly.sh` is the cron wrapper: silent when the run is clean - every
 message from an expected sender and nothing quarantined or rejected - and
-otherwise a mail to `alerts@bandsman.co.uk` with the full output.  It is installed in the crontab for Mondays at 06:17.
+otherwise a mail to `MAIL_TO` - `alerts@example.org` by default - with the
+full output.  It is meant to be installed in a crontab, on Monday mornings or
+whenever suits.
 
 ```
     DRY_RUN=1 dmarc-weekly.sh     # show what would be mailed, send nothing
 ```
 
-It sets `PERL` to the perlbrew perl because cron's `PATH` has only the system
-perl, which lacks `XML::LibXML`.  Failures are always appended to
+It puts `$HOME/perl5/perlbrew/perls/perl-5.40.0/bin/perl` first for `PERL`,
+falling back to `perl`, because cron's `PATH` often holds only a system perl
+without `XML::LibXML`; set `PERL` to choose another.  The expected sender
+comes from `DMARC_EXPECTED`, which the crontab has to provide.  Failures are
+always appended to
 `~/dmarc-report.log`.  There is no local MTA on this machine, so the mail step
 needs `MAIL_COMMAND` set (anything reading a message with headers on stdin) or
 msmtp/ssmtp installed; until then the output is logged and printed to stderr.
@@ -193,6 +201,24 @@ Only the files the summariser actually read are moved - `dmarc-report.pl
 directory stay put.  A report fetched twice keeps both copies, the second
 renamed with a timestamp.  `DMARC_ARCHIVE=0` turns archiving off; a run with
 nothing new exits 0 and says nothing.
+
+## Signing the Mail
+
+A report tells you what the receivers made of the mail; a signature is what
+makes a copy of it forwarded by someone else stop looking like a forgery, and
+is what `p=quarantine` and `p=reject` are cheap enough to ask for.
+`bin/dkim-sendmail` is that half of the job: put it where a CGI script or a
+crontab calls sendmail(1) and the message is signed on its way out, with no
+change to the script that sends it.
+
+```
+    DKIM_DOMAINS=example.org DKIM_KEYDIR=~/dkim dkim-sendmail -t -f webmaster@example.org < message
+```
+
+Only the domains named in `DKIM_DOMAINS` are signed.  Everything else - a
+foreign `From:`, a missing key, a message with no `From:` at all - is passed
+to sendmail untouched, so installing it cannot stop mail being delivered.
+`perldoc bin/dkim-sendmail` has the key layout and the rest.
 
 ## Cookbook: Trends Across Reporters
 
@@ -211,10 +237,10 @@ so the nesting costs nothing:
     report_metadata_date_range_begin  1794614400
     policy_published_p                quarantine
     policy_published_pct              25
-    row_source_ip                     185.247.116.62
+    row_source_ip                     198.51.100.23
     row_count                         5
     row_policy_evaluated_disposition  quarantine
-    identifiers_header_from           bandsman.co.uk
+    identifiers_header_from           example.org
     auth_results_spf_result           softfail
 ```
 
@@ -234,7 +260,7 @@ when started anywhere else.  Then open a file with _Open file..._:
 ```
 
 Archived names contain `!`, so pick the file rather than typing a URL; the
-URL behind the panel is `/open?path=/home/njh/dmarc-archive/...xml` with the
+URL behind the panel is `/open?path=~/dmarc-archive/...xml` with the
 name percent-encoded.
 
 ### Several Reports at Once
@@ -243,8 +269,8 @@ name percent-encoded.
 visible.  The first is `l=`, every further one `c=`:
 
 ```
-    /combine?l=path:/home/njh/dmarc-archive/google.com!...!1794355200!1794441599.xml
-            &c=path:/home/njh/dmarc-archive/google.com!...!1794441600!1794527999.xml
+    /combine?l=path:~/dmarc-archive/google.com!...!1794355200!1794441599.xml
+            &c=path:~/dmarc-archive/google.com!...!1794441600!1794527999.xml
 ```
 
 Every column from every source appears and cells are blank where a reporter
@@ -325,6 +351,12 @@ the archive and log defaults land in the temporary directory:
 - an empty reports directory exits 0 without a word, while a missing one still fails and says why
 - a finding is mailed, and the mail says how many reports were archived.
 
+`t/dkim-sendmail.t` makes its own key pair at run time and proves that the
+signature the wrapper produces verifies against it, through a stubbed DNS
+lookup, so no key material is in the repository.  It also covers the messages
+that have to pass through unsigned, the sendmail arguments, and the exit
+status.
+
 `t/readme.t` runs pod2github over this file and fails if the committed
 README.md is not what it produces, so the two cannot drift apart.  Regenerate
 it with:
@@ -338,4 +370,5 @@ The title in that output comes from `.pod2github-header.md`, named by
 would otherwise leave the README with no H1 at all.
 
 Requires `Test::Most`, `XML::LibXML`, `IO::Compress::{Gzip,Zip}`,
-`IO::Uncompress::{Gunzip,Unzip}`, `Readonly` and `Time::HiRes`.
+`IO::Uncompress::{Gunzip,Unzip}`, `Readonly`, `Time::HiRes`, `Mail::DKIM` and
+`Net::DNS`.

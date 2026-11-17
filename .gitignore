@@ -39,3 +39,9 @@ inc/
 /.carmel/
 # cpanfile.snapshot should generally be ignored for library code, otherwise included
 # cpanfile.snapshot
+
+# Key material, captured messages and logs have no place in the repository
+*.private
+*.key
+*.eml
+*.log
