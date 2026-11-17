@@ -1,0 +1,255 @@
+#!/usr/bin/env perl
+#
+# dkim-sendmail - sign a message that arrives on stdin, then hand it to
+# sendmail(1) with the arguments given on the command line.
+#
+# It exists to be dropped where a CGI script or a cron job calls
+# /usr/sbin/sendmail directly: those messages go out with no signature, so a
+# forwarded copy looks exactly like a forgery to the receiving site.  Pointing
+# that one call at this instead signs the mail without touching the script.
+#
+# Only the domains named in DKIM_DOMAINS are signed.  Everything else - a
+# message from an address this host has no key for, a message with no From:
+# header, a message whose key cannot be read - is passed through untouched, so
+# installing this can never stop mail being delivered.
+
+use strict;
+use warnings;
+
+use Mail::DKIM::Signer;
+
+# The key is found, not configured: a selector is either named or taken from
+# the only key in the key directory.  A missing key is a warning and an
+# unsigned delivery, never a lost message.
+my $home = $ENV{'HOME'} || (getpwuid($<))[7] || '.';
+my $KEYDIR = $ENV{'DKIM_KEYDIR'} || "$home/dkim";
+my $SELECTOR = $ENV{'DKIM_SELECTOR'};
+my $SENDMAIL = $ENV{'SENDMAIL'} || '/usr/sbin/sendmail';
+
+my %DOMAINS = map { $_ => 1 } grep { length } map { lc } split(/[\s,]+/, $ENV{'DKIM_DOMAINS'} // '');
+
+my $message = do { local $/; <STDIN> };
+$message = '' unless(defined($message));
+
+my $domain = from_domain($message);
+if(defined($domain) && $DOMAINS{$domain}) {
+	my $signed = sign_message($message, $domain);
+	$message = $signed if(defined($signed));
+}
+
+deliver($message);
+
+#
+# The domain an address is at, from the first From: header.  A header field can
+# be folded over several lines, so the continuation lines are joined first, and
+# a display name is dropped in favour of the address in angle brackets.
+sub from_domain
+{
+	my $message = shift;
+
+	my ($head) = $message =~ /\A(.*?)\r?\n\r?\n/s;
+	$head = $message unless(defined($head));
+	$head =~ s/\r?\n[ \t]+/ /g;
+	return unless($head =~ /^From:[ \t]*(.*?)\s*$/mi);
+
+	my $value = $1;
+	my ($address) = $value =~ /<([^>]*)>/;
+	$address = $value unless(defined($address));
+
+	# An address can be followed by a comment, so the domain is the last
+	# thing that looks like one rather than the end of the string.
+	my @domains = $address =~ /\@([A-Za-z0-9.-]+)/g;
+	return unless(@domains);
+	(my $domain = $domains[-1]) =~ s/\.\z//;
+
+	return lc($domain);
+}
+
+#
+# The key file is $KEYDIR/<selector>.private.  With DKIM_SELECTOR unset the
+# selector is the name of the only key in the directory, which is the usual
+# case: one key, published for every domain this host sends as.  Anything
+# ambiguous is a warning rather than a guess.
+sub selector
+{
+	return $SELECTOR if(defined($SELECTOR) && length($SELECTOR));
+
+	opendir(my $dh, $KEYDIR) or do {
+		warn "dkim-sendmail: cannot read $KEYDIR: $!\n";
+		return;
+	};
+	my @keys = sort grep { /\.private\z/ } readdir($dh);
+	closedir($dh);
+
+	unless(@keys == 1) {
+		warn sprintf("dkim-sendmail: %s holds %d key(s); set DKIM_SELECTOR to choose one\n",
+			$KEYDIR, scalar(@keys));
+		return;
+	}
+
+	(my $selector = $keys[0]) =~ s/\.private\z//;
+	return $selector;
+}
+
+#
+# The signed message, or nothing at all if it cannot be signed - the caller
+# delivers the original in that case, and the reason is on stderr.
+sub sign_message
+{
+	my ($message, $domain) = @_;
+
+	my $selector = selector();
+	return unless(defined($selector));
+
+	my $keyfile = "$KEYDIR/$selector.private";
+	unless(-r $keyfile) {
+		warn "dkim-sendmail: no readable key at $keyfile; sending $domain unsigned\n";
+		return;
+	}
+
+	# DKIM hashes the message in the form it travels in, where every line
+	# ends CRLF, so the text that is signed is a CRLF copy of what arrived.
+	(my $text = $message) =~ s/\r\n/\n/g;
+	$text =~ s/\n/\r\n/g;
+
+	my $signature;
+	eval {
+		my $signer = Mail::DKIM::Signer->new(
+			Algorithm => 'rsa-sha256',
+			Method => 'relaxed',
+			Domain => $domain,
+			Selector => $selector,
+			KeyFile => $keyfile,
+		);
+		$signer->PRINT($text);
+		$signer->CLOSE;
+		$signature = $signer->signature;
+		1;
+	} or do {
+		my $error = $@ || 'unknown error';
+		chomp($error);
+		warn "dkim-sendmail: cannot sign for $domain ($error); sending unsigned\n";
+		return;
+	};
+	unless($signature) {
+		warn "dkim-sendmail: no signature was produced for $domain; sending unsigned\n";
+		return;
+	}
+
+	# The signature is a header field, and it must precede the headers it
+	# signs, so it goes on the front of the message.
+	return $signature->as_string . "\r\n" . $text;
+}
+
+#
+# Every argument is sendmail's own - -t, -f, -odq and the rest are passed on
+# untouched - and the exit status is sendmail's, so a caller that checked the
+# status before still learns whether the message went.
+sub deliver
+{
+	my $message = shift;
+
+	open(my $sendmail, '|-', $SENDMAIL, @ARGV) or do {
+		warn "dkim-sendmail: cannot run $SENDMAIL: $!\n";
+		exit(1);
+	};
+	print $sendmail $message;
+	unless(close($sendmail)) {
+		my $status = $? >> 8;
+		warn "dkim-sendmail: $SENDMAIL failed\n";
+		exit($status || 1);
+	}
+
+	exit(0);
+}
+
+__END__
+
+=head1 NAME
+
+dkim-sendmail - sign a message on stdin with DKIM, then send it with sendmail
+
+=head1 SYNOPSIS
+
+	dkim-sendmail [-t] [-f address] [sendmail options...] < message
+
+	# the way a CGI script or a crontab calls it
+	SENDMAIL=/usr/sbin/sendmail DKIM_DOMAINS=example.org \
+		DKIM_KEYDIR=~/dkim /usr/local/bin/dkim-sendmail -t -f webmaster@example.org
+
+=head1 DESCRIPTION
+
+Reads a complete message, headers and body, from standard input.  If the
+domain in its C<From:> header is one of the domains this host signs for, a
+C<DKIM-Signature> header is added - C<rsa-sha256>, C<relaxed> header and body
+canonicalization, the shape receivers expect - and the signed message is
+written to sendmail.  Otherwise the message is written to sendmail unchanged.
+
+It is meant to be put in place of a direct call to sendmail(1), so that mail
+sent by a script or a cron job is signed without the script being changed:  a
+copy forwarded by a mailing list or a colleague otherwise arrives with no
+signature at all, which is indistinguishable from a forgery, and that is what
+makes a DMARC policy at C<p=quarantine> or C<p=reject> expensive.
+
+Every argument is passed to sendmail as it was given, so C<-t>, C<-f> and
+C<-odq> keep working, and the exit status is sendmail's own.
+
+The message handed to sendmail is the message that was signed: the lines end
+CRLF, because that is the form DKIM hashes and the form a message travels in.
+A message that is passed through unsigned is left exactly as it arrived.
+
+=head1 ENVIRONMENT
+
+=over 4
+
+=item B<DKIM_DOMAINS>
+
+A comma or space separated list of the domains to sign for, for example
+C<example.org,example.net>.  A message whose C<From:> domain is not in the
+list is passed through unsigned.  When this is empty or unset nothing is
+signed, which is the safe state before the keys are in place.
+
+The comparison is case insensitive, and the domain comes from the address, not
+from a display name: C<< From: "Nigel" <alerts@example.org> >> is
+C<example.org>.
+
+=item B<DKIM_KEYDIR>
+
+The directory holding the private keys.  Defaults to F<~/dkim>.
+
+=item B<DKIM_SELECTOR>
+
+The selector the key is published under, which names the key file:
+C<$DKIM_KEYDIR/$DKIM_SELECTOR.private>.  When it is unset the only
+F<*.private> file in B<DKIM_KEYDIR> is used and its name is the selector, so a
+host with one key needs no configuration beyond B<DKIM_DOMAINS>.
+
+=item B<SENDMAIL>
+
+The program to hand the message to.  Defaults to F</usr/sbin/sendmail>.
+
+=back
+
+=head1 BEHAVIOUR WHEN IT CANNOT SIGN
+
+Signing never stands between a message and its recipient.  A missing or
+unreadable key, several keys and no selector to choose between them, a key
+that will not load, or a signer that produces no signature each produce a
+warning on standard error and the message is delivered unsigned.
+
+=head1 EXIT STATUS
+
+The exit status of sendmail, so C<0> when the message was accepted.  C<1> when
+sendmail cannot be run at all, and a warning on standard error.  Signing
+problems do not change the exit status: the mail is still delivered.
+
+=head1 SEE ALSO
+
+F<dmarc-report.pl>, which is what makes the reports worth signing for, and
+L<Mail::DKIM::Signer>.
+
+=head1 LICENCE
+
+GNU General Public License, version 2, as in the F<LICENSE> file.
+
+=cut
