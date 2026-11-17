@@ -38,6 +38,13 @@ an expected host whose mail did not authenticate, since that is the case worth
 looking at: it means the host is sending but the signature or the SPF record
 is wrong.
 
+Two more cases are marked, because they are the ones that decide whether the
+policy can go further: a message that passed DKIM or SPF and was quarantined
+or rejected anyway, and a message from an expected host that was quarantined
+or rejected.  The first means the receiver took a stricter view of alignment
+than the report's own verdicts suggest, and the second means our own mail is
+being filed, which has to be put right before moving on to `p=reject`.
+
 The totals are kept per domain because the reports for several domains arrive
 at the same mailbox: an address that legitimately sends for one domain is not
 thereby legitimate for another, so adding the figures together would hide both
@@ -77,6 +84,8 @@ Per report first, one line per source address:
 - `domain` / `p=` is the policy the receiving site applied, so `p=none` means nothing was blocked and these figures are observation only.
 - `dkim=` and `spf=` are the verdicts DMARC made; `dkim seen:` and `spf seen:` are what the report says the message actually offered.
 - `dkim seen: none` means the message carried no signature at all, which is a different problem from a signature that failed to verify.
+- `<== authenticated, but quarantined` - DKIM or SPF passed and the receiver filed the message regardless.
+- `<== expected sender, quarantined` - our own host's mail was filed by the policy.
 
 Then the totals, grouped by domain:
 
@@ -105,17 +114,35 @@ The `status` column is the thing to read; these are its values and their meaning
 The same address appears in each domain's block with that domain's own counts,
 never one merged figure.
 
+Then, only when there are any, the messages that were filed although they
+should not have been:
+
+```
+    ==============================================================================
+    Filed by policy although it should not have been: 4 message(s)
+      domain                 source_ip        disposition  messages  why
+      bandsman.co.uk         198.51.100.7     quarantine          4  authenticated, yet quarantined (dkim=pass spf=fail)
+
+    4 message(s) were quarantined or rejected although they should not have been.
+```
+
+A quarantine or rejection is worth acting on even when every sender is
+expected: at that point the mail is not being delivered, so the report has
+moved from describing a problem to causing one.
+
 ### Exit Status
 
-`0` when every message came from an expected sender, `1` when something else
-did, `2` on a usage error, so it is safe in a cron job:
+`0` when every message came from an expected sender and none was quarantined
+or rejected, `1` when something else did or when a message was filed anyway,
+`2` on a usage error, so it is safe in a cron job:
 
 ```
     dmarc-report.pl -d /var/reports/dmarc || echo 'unexpected sender'
 ```
 
 `expected, failing auth` does not by itself make it exit 1: it is a delivery
-problem on our side, not a foreign sender.  Errors (no reports found, a
+problem on our side, not a foreign sender.  A quarantine or rejection does,
+since by then the mail is being filed rather than delivered.  Errors (no reports found, a
 missing directory) exit non-zero with the reason on stderr.
 
 ## Options
@@ -142,9 +169,9 @@ missing directory) exit non-zero with the reason on stderr.
 
 ## Weekly Check
 
-`dmarc-weekly.sh` is the cron wrapper: silent when every message came from
-the expected sender, and otherwise a mail to `alerts@bandsman.co.uk` with the
-full output.  It is installed in the crontab for Mondays at 06:17.
+`dmarc-weekly.sh` is the cron wrapper: silent when the run is clean - every
+message from an expected sender and nothing quarantined or rejected - and
+otherwise a mail to `alerts@bandsman.co.uk` with the full output.  It is installed in the crontab for Mondays at 06:17.
 
 ```
     DRY_RUN=1 dmarc-weekly.sh     # show what would be mailed, send nothing

@@ -36,7 +36,7 @@ REPORTS=${DMARC_DIR:-$HOME/Downloads}
 ARCHIVE=${DMARC_ARCHIVE_DIR:-$HOME/dmarc-archive}
 MAIL_TO=${MAIL_TO:-alerts@bandsman.co.uk}
 LOG=${DMARC_LOG:-$HOME/dmarc-report.log}
-SUBJECT="DMARC: mail from an address that is not the VPS"
+SUBJECT="DMARC: mail that needs looking at"
 
 MOVED=0
 
@@ -111,6 +111,9 @@ message="DMARC check of $REPORTS at $(date '+%Y-%m-%d %H:%M') exited $status.
 Addresses that are not the expected sender are marked UNEXPECTED SOURCE.
 'expected, failing auth' is different: the VPS sent it, but its signature or
 SPF record did not hold up, and that is a sending problem on our side.
+A message marked 'authenticated, but quarantined' passed DKIM or SPF and was
+filed anyway, and 'expected sender, quarantined' means our own mail is being
+filed; both are listed again under 'Filed by policy'.
 
 $output"
 

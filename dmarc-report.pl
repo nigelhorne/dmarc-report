@@ -176,6 +176,10 @@ my %by_domain;
 my @read_files;
 my ($total_messages, $total_records, $reports_read) = (0, 0, 0);
 my $unexpected_messages = 0;
+# Messages the policy quarantined or rejected that should not have been:
+# either they authenticated, or they came from an expected host.
+my $misfiled_messages = 0;
+my %misfiled;
 
 foreach my $path (@files) {
 	my $doc = eval { read_report($path) };
@@ -240,13 +244,44 @@ foreach my $path (@files) {
 		my $domain = $reported_domain || $header_from || '(unknown)';
 
 		my $passed = ($dkim_verdict eq 'pass') || ($spf_verdict eq 'pass');
-		my $flag = '';
+
+		# Two failures worth naming as they happen, because neither shows up in
+		# the per-address totals: mail that authenticated and was filed anyway,
+		# and mail of ours that the policy filed.
+		my $filed = ($disposition eq 'quarantine' || $disposition eq 'reject');
+		my $word = ($disposition eq 'reject') ? 'rejected' : 'quarantined';
+
+		my @flags;
 		if(!$expected{$ip}) {
-			$flag = '  <== NOT ' . join('/', @expected);
+			push @flags, 'NOT ' . join('/', @expected);
 			$unexpected_messages += $count;
 		} elsif(!$passed) {
-			$flag = '  <== expected host, not authenticating';
+			push @flags, 'expected host, not authenticating';
 		}
+
+		if($filed && $passed && $expected{$ip}) {
+			push @flags, "expected sender, $word though authenticated";
+		} elsif($filed && $passed) {
+			push @flags, "authenticated, but $word";
+		} elsif($filed && $expected{$ip}) {
+			push @flags, "expected sender, $word";
+		}
+
+		if($filed && ($passed || $expected{$ip})) {
+			my $finding = $misfiled{join("\t", $domain, $ip, $disposition)} ||= {
+				'domain' => $domain, 'ip' => $ip, 'disposition' => $disposition,
+				'count' => 0, 'passed' => 0, 'expected' => 0,
+				'dkim' => {}, 'spf' => {},
+			};
+			$finding->{'count'} += $count;
+			$finding->{'passed'} = 1 if($passed);
+			$finding->{'expected'} = 1 if($expected{$ip});
+			$finding->{'dkim'}{$dkim_verdict} = 1;
+			$finding->{'spf'}{$spf_verdict} = 1;
+			$misfiled_messages += $count;
+		}
+
+		my $flag = @flags ? '  <== ' . join('; ', @flags) : '';
 
 		printf "  %-16s %5d  dkim=%-5s spf=%-8s %-9s from=%s%s\n",
 			$ip, $count, $dkim_verdict, $spf_verdict, $disposition, $header_from, $flag;
@@ -302,12 +337,35 @@ foreach my $domain (sort keys %by_domain) {
 	}
 }
 
+# Named after the totals, so the figures that explain them come first.
+if(%misfiled) {
+	print '=' x 78, "\n";
+	printf "Filed by policy although it should not have been: %d message(s)\n", $misfiled_messages;
+	printf "  %-22s %-16s %-11s %8s  %s\n", 'domain', 'source_ip', 'disposition', 'messages', 'why';
+	foreach my $finding (sort {
+		$a->{'domain'} cmp $b->{'domain'} || $b->{'count'} <=> $a->{'count'} || $a->{'ip'} cmp $b->{'ip'}
+	} values %misfiled) {
+		my $reason = $finding->{'expected'}
+			? ($finding->{'passed'} ? 'expected sender, and authenticated' : 'expected sender')
+			: 'authenticated';
+		$reason .= ($finding->{'disposition'} eq 'reject') ? ', yet rejected' : ', yet quarantined';
+		printf "  %-22s %-16s %-11s %8d  %s (dkim=%s spf=%s)\n",
+			$finding->{'domain'}, $finding->{'ip'}, $finding->{'disposition'},
+			$finding->{'count'}, $reason,
+			join('/', sort keys %{$finding->{'dkim'}}), join('/', sort keys %{$finding->{'spf'}});
+	}
+}
+
 print "\n";
+if(%misfiled) {
+	printf "%d message(s) were quarantined or rejected although they should not have been.\n", $misfiled_messages;
+}
 if($unexpected_messages) {
 	printf "%d message(s) came from addresses that are not %s.\n", $unexpected_messages, join('/', @expected);
 	exit(1);
 }
-print "Every message came from ", join('/', @expected), ".\n";
+exit(1) if(%misfiled);
+print "Every message came from ", join('/', @expected), ", and none was filed by policy.\n";
 exit(0);
 
 __END__
@@ -347,6 +405,13 @@ Any source address that is not one of the expected hosts is marked, and so is
 an expected host whose mail did not authenticate, since that is the case worth
 looking at: it means the host is sending but the signature or the SPF record
 is wrong.
+
+Two more cases are marked, because they are the ones that decide whether the
+policy can go further: a message that passed DKIM or SPF and was quarantined
+or rejected anyway, and a message from an expected host that was quarantined
+or rejected.  The first means the receiver took a stricter view of alignment
+than the report's own verdicts suggest, and the second means our own mail is
+being filed, which has to be put right before moving on to C<p=reject>.
 
 The totals are kept per domain because the reports for several domains arrive
 at the same mailbox: an address that legitimately sends for one domain is not
@@ -388,6 +453,10 @@ Per report first, one line per source address:
 
 =item * C<dkim seen: none> means the message carried no signature at all, which is a different problem from a signature that failed to verify.
 
+=item * C<< <== authenticated, but quarantined >> - DKIM or SPF passed and the receiver filed the message regardless.
+
+=item * C<< <== expected sender, quarantined >> - our own host's mail was filed by the policy.
+
 =back
 
 Then the totals, grouped by domain:
@@ -421,15 +490,31 @@ The C<status> column is the thing to read; these are its values and their meanin
 The same address appears in each domain's block with that domain's own counts,
 never one merged figure.
 
+Then, only when there are any, the messages that were filed although they
+should not have been:
+
+	==============================================================================
+	Filed by policy although it should not have been: 4 message(s)
+	  domain                 source_ip        disposition  messages  why
+	  bandsman.co.uk         198.51.100.7     quarantine          4  authenticated, yet quarantined (dkim=pass spf=fail)
+
+	4 message(s) were quarantined or rejected although they should not have been.
+
+A quarantine or rejection is worth acting on even when every sender is
+expected: at that point the mail is not being delivered, so the report has
+moved from describing a problem to causing one.
+
 =head2 Exit status
 
-C<0> when every message came from an expected sender, C<1> when something else
-did, C<2> on a usage error, so it is safe in a cron job:
+C<0> when every message came from an expected sender and none was quarantined
+or rejected, C<1> when something else did or when a message was filed anyway,
+C<2> on a usage error, so it is safe in a cron job:
 
 	dmarc-report.pl -d /var/reports/dmarc || echo 'unexpected sender'
 
 C<expected, failing auth> does not by itself make it exit 1: it is a delivery
-problem on our side, not a foreign sender.  Errors (no reports found, a
+problem on our side, not a foreign sender.  A quarantine or rejection does,
+since by then the mail is being filed rather than delivered.  Errors (no reports found, a
 missing directory) exit non-zero with the reason on stderr.
 
 =head1 OPTIONS
@@ -460,9 +545,9 @@ Print this documentation.
 
 =head1 WEEKLY CHECK
 
-C<dmarc-weekly.sh> is the cron wrapper: silent when every message came from
-the expected sender, and otherwise a mail to C<alerts@bandsman.co.uk> with the
-full output.  It is installed in the crontab for Mondays at 06:17.
+C<dmarc-weekly.sh> is the cron wrapper: silent when the run is clean - every
+message from an expected sender and nothing quarantined or rejected - and
+otherwise a mail to C<alerts@bandsman.co.uk> with the full output.  It is installed in the crontab for Mondays at 06:17.
 
 	DRY_RUN=1 dmarc-weekly.sh     # show what would be mailed, send nothing
 

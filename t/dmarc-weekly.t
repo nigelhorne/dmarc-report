@@ -243,7 +243,7 @@ subtest 'a finding is mailed, and names the archive' => sub {
 	my ($status, $out, $err, $mail) = run_wrapper(HOME => $home, DMARC_DIR => $dir);
 	is($status, 1, 'exits 1');
 	is($err, '', 'nothing on stderr, because a transport was available');
-	like($mail, qr/^Subject: .*not the VPS/m, 'the mail has a subject');
+	like($mail, qr/^Subject: .*needs looking at/m, 'the mail has a subject');
 	like($mail, qr/203\.0\.113\.7/, 'it carries the finding');
 	like($mail, qr/1 report\(s\) moved to \Q$ARCHIVE\E/, 'and says where the reports went');
 	ok(-f File::Spec->catfile($ARCHIVE, 'bad.xml'), 'the report was archived');
