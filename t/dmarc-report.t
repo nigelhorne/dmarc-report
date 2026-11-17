@@ -298,63 +298,73 @@ subtest 'the reports it read can be listed for archiving' => sub {
 };
 
 subtest 'a message quarantined or rejected that should not have been is flagged' => sub {
-	my $dir = File::Spec->catdir($main::TMP, 'filed');
-	mkdir($dir) or die "Cannot mkdir $dir: $!";
-
-	# Authenticated, yet quarantined.  The address is allowed with -e so that
-	# the unexpected-sender rule cannot be what makes this run fail: the new
-	# check has to stand on its own.
-	write_file(File::Spec->catfile($dir, 'auth-quarantined.xml'),
-		report_xml(name => 'auth-quarantined.xml', domain => 'bandsman.co.uk',
-			ip => '198.51.100.7', count => 4, dkim => 'pass', spf => 'fail',
-			disposition => 'quarantine'));
-	my ($status, $out, $err) = run_script('-d', $dir, '-e', $VPS, '-e', '198.51.100.7');
-	is($status, 1, 'authenticated but quarantined fails the run');
-	like($out, qr/198\.51\.100\.7.*authenticated, but quarantined/, 'the record line says so');
-	like($out, qr/Filed by policy although it should not have been: 4 message\(s\)/,
-		'the summary counts it');
-	like($out, qr/^  bandsman\.co\.uk\s+198\.51\.100\.7\s+quarantine\s+4\s+authenticated, yet quarantined/m,
-		'the summary names it under its domain');
-	like($out, qr/4 message\(s\) were quarantined or rejected although they should not have been/,
-		'and the closing line counts it');
-	unlike($out, qr/198\.51\.100\.7.*NOT /, 'it is not also reported as an unexpected sender');
-	is($err, '', 'nothing on stderr');
-
 	# Our own host, quarantined: the case that has to be fixed before any move
-	# to p=reject.
+	# to p=reject, and the one that is easy to miss in the per-address totals.
 	my $own = File::Spec->catdir($main::TMP, 'filed-own');
 	mkdir($own) or die "Cannot mkdir $own: $!";
 	write_file(File::Spec->catfile($own, 'own-quarantined.xml'),
 		report_xml(name => 'own-quarantined.xml', domain => 'nigelhorne.com',
 			ip => $VPS, count => 2, dkim => 'fail', spf => 'fail', disposition => 'quarantine'));
-	my ($own_status, $own_out) = run_script('-d', $own);
+	my ($own_status, $own_out, $own_err) = run_script('-d', $own);
 	is($own_status, 1, 'the expected host being quarantined fails the run');
-	like($own_out, qr/\Q$VPS\E.*expected sender, quarantined/, 'the record line says which case it is');
+	like($own_out, qr/\Q$VPS\E.*expected host, not authenticating; expected sender, quarantined/,
+		'the record line says both things');
+	like($own_out, qr/^Filed by policy although it should not have been: 2 message\(s\)/m,
+		'the summary counts them');
 	like($own_out, qr/^  nigelhorne\.com\s+\Q$VPS\E\s+quarantine\s+2\s+expected sender, yet quarantined/m,
-		'the summary names it as our own mail');
+		'and names the address under its domain');
+	is($own_err, '', 'nothing on stderr');
 
 	# A rejection is the same failure, and the wording follows the disposition.
 	my $rej = File::Spec->catdir($main::TMP, 'filed-reject');
 	mkdir($rej) or die "Cannot mkdir $rej: $!";
-	write_file(File::Spec->catfile($rej, 'rejected.xml'),
-		report_xml(name => 'rejected.xml', domain => 'bandsman.co.uk',
-			ip => '198.51.100.8', count => 3, dkim => 'fail', spf => 'pass', disposition => 'reject'));
-	my ($rej_status, $rej_out) = run_script('-d', $rej, '-e', $VPS, '-e', '198.51.100.8');
+	write_file(File::Spec->catfile($rej, 'own-rejected.xml'),
+		report_xml(name => 'own-rejected.xml', domain => 'bandsman.co.uk',
+			ip => $VPS, count => 3, dkim => 'fail', spf => 'pass', disposition => 'reject'));
+	my ($rej_status, $rej_out) = run_script('-d', $rej);
 	is($rej_status, 1, 'a rejection fails the run too');
-	like($rej_out, qr/198\.51\.100\.8.*authenticated, but rejected/, 'the record line says rejected');
-	like($rej_out, qr/authenticated, yet rejected/, 'and the summary uses the right word');
+	like($rej_out, qr/\Q$VPS\E.*expected sender, rejected though authenticated/,
+		'the record line says rejected, and that it authenticated')
+		or diag($rej_out);
+	like($rej_out, qr/expected sender, and authenticated, yet rejected/, 'the summary uses the right word');
 
-	# The ordinary case: forged mail from a hostile address, which is exactly
-	# what quarantine is for.  Nothing is flagged and the run stays clean.
+	# Authenticated but filed, from an address that is not one of ours: the
+	# first half of the check, independent of who sent it.
+	my $auth = File::Spec->catdir($main::TMP, 'filed-auth');
+	mkdir($auth) or die "Cannot mkdir $auth: $!";
+	write_file(File::Spec->catfile($auth, 'auth-quarantined.xml'),
+		report_xml(name => 'auth-quarantined.xml', domain => 'bandsman.co.uk',
+			ip => '198.51.100.7', count => 4, dkim => 'pass', spf => 'fail', disposition => 'quarantine'));
+	my ($auth_status, $auth_out) = run_script('-d', $auth);
+	is($auth_status, 1, 'a passing sender being quarantined fails the run');
+	like($auth_out, qr/198\.51\.100\.7.*authenticated, but quarantined/, 'the record line says so');
+	like($auth_out, qr/^  bandsman\.co\.uk\s+198\.51\.100\.7\s+quarantine\s+4\s+authenticated, yet quarantined/m,
+		'and the summary names it');
+
+	# The case the check must not cry about: forged mail that failed both
+	# checks.  It is an unexpected sender, so the run still fails, but nothing
+	# was quarantined that should not have been.
 	my $spam = File::Spec->catdir($main::TMP, 'filed-spam');
 	mkdir($spam) or die "Cannot mkdir $spam: $!";
 	write_file(File::Spec->catfile($spam, 'spam-quarantined.xml'),
 		report_xml(name => 'spam-quarantined.xml', domain => 'bandsman.co.uk',
 			ip => '203.0.113.9', count => 6, dkim => 'fail', spf => 'fail', disposition => 'quarantine'));
-	my ($spam_status, $spam_out) = run_script('-d', $spam, '-e', $VPS, '-e', '203.0.113.9');
-	is($spam_status, 0, 'quarantining a forged sender that failed both checks is the policy working');
-	unlike($spam_out, qr/Filed by policy/, 'so it is not reported as misfiled');
-	like($spam_out, qr/Every message came from .*and none was filed by policy/, 'and the run says it is clean');
+	my ($spam_status, $spam_out) = run_script('-d', $spam);
+	is($spam_status, 1, 'a forged sender still fails the run, as it always did');
+	unlike($spam_out, qr/Filed by policy/, 'but quarantining it is not reported as misfiled');
+	like($spam_out, qr/6 message\(s\) came from addresses that are not \Q$VPS\E/,
+		'it is reported as an unexpected sender instead');
+
+	# Nothing quarantined at all: the new check stays out of the way.
+	my $clean = File::Spec->catdir($main::TMP, 'filed-clean');
+	mkdir($clean) or die "Cannot mkdir $clean: $!";
+	write_file(File::Spec->catfile($clean, 'delivered.xml'),
+		report_xml(name => 'delivered.xml', domain => 'bandsman.co.uk', ip => $VPS, count => 5));
+	my ($clean_status, $clean_out) = run_script('-d', $clean);
+	is($clean_status, 0, 'a clean run still exits 0');
+	unlike($clean_out, qr/Filed by policy/, 'and says nothing about filed mail');
+	like($clean_out, qr/Every message came from \Q$VPS\E, and none was filed by policy/,
+		'and the closing line says it is clean');
 };
 
 subtest 'an empty directory and a bad directory are errors' => sub {
