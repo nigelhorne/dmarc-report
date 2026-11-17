@@ -4,10 +4,10 @@
 # so that you can see whether mail from here authenticates before tightening
 # the DMARC policy.
 #
-# The message is signed with Web::VWF::Mail, the signer the site uses, because
-# a test that sent some other way would test something other than the real
-# path.  --plain sends it unsigned through sendmail(1) instead, which is what
-# cron does, so both outcomes can be seen in the same mailbox.
+# The message is signed with Mail::DKIM::Signer, the signer bin/mail-dkim
+# uses, so a test that sent some other way would test something other than the
+# real path.  --plain sends it unsigned through sendmail(1) instead, which is
+# what cron does, so both outcomes can be seen in the same mailbox.
 #
 # Usage:
 #	dmarc-check-mail.pl                     # sign and send to DMARC_TEST_TO
@@ -23,7 +23,6 @@ use warnings;
 
 use Getopt::Long qw(GetOptions);
 use File::Spec;
-use File::Temp qw(tempdir);
 use POSIX qw(strftime);
 use Sys::Hostname qw(hostname);
 
@@ -76,9 +75,7 @@ if($opt{'plain'}) {
 	die "Mail::DKIM is not installed for $^X, so nothing can be signed.\n"
 		. "Install it, or use --plain to send unsigned on purpose.\n"
 		unless(eval { require Mail::DKIM::Signer; 1 });
-	eval { require Web::VWF::Mail; 1 }
-		or die "Web::VWF::Mail is not installed for $^X: $@\n";
-	$mailer = "Web::VWF::Mail, signed with d=$opt{'domain'} s=$opt{'selector'}";
+	$mailer = "Mail::DKIM::Signer, signed with d=$opt{'domain'} s=$opt{'selector'}";
 }
 
 my $subject = "DKIM check from $host at $now";
@@ -147,42 +144,35 @@ print "Mail::DKIM is installed for $^X.\n";
 
 exit(0);
 
-# Signing happens inside Web::VWF::Mail's close(), which pipes to a program, so
-# the signature is obtained by pointing it at a catcher rather than by calling
-# into its private methods.
+# DKIM hashes the message in the form it travels in, where every line ends
+# CRLF; the message handed to sendmail keeps the line endings it has, as
+# bin/mail-dkim does.
 sub sign
 {
 	my $message = shift;
 
-	my $dir = tempdir(CLEANUP => 1);
-	my $captured = File::Spec->catfile($dir, 'message');
-	my $catcher = File::Spec->catfile($dir, 'sendmail');
+	(my $wire = $message) =~ s/\r\n/\n/g;
+	$wire =~ s/\n/\r\n/g;
 
-	open(my $fh, '>', $catcher) or die "Cannot write $catcher: $!\n";
-	print $fh "#!/bin/sh\ncat > '$captured'\n";
-	close($fh) or die "Cannot close $catcher: $!\n";
-	chmod(0755, $catcher) or die "Cannot chmod $catcher: $!\n";
-
-	my $mail = Web::VWF::Mail->new(
-		'from' => $opt{'from'},
-		'domain' => $opt{'domain'},
-		'selector' => $opt{'selector'},
-		'keyfile' => $keyfile,
-		'sendmail' => $catcher,
-	);
-
-	$mail->print($message);
-	die "Signing did not produce a message\n" unless($mail->close());
-
-	local $/;
-	open(my $in, '<', $captured) or die "Cannot read signed message: $!\n";
-	my $signed = <$in>;
-	close($in);
-
-	die "Signing produced no output\n" unless(defined($signed) && length($signed));
-	die "The message came back unsigned: Web::VWF::Mail could not sign it.\n"
-		. "Check that $keyfile belongs to $opt{'selector'} and is readable.\n"
-		unless($signed =~ /^DKIM-Signature:/m);
+	my $signed;
+	eval {
+		my $signer = Mail::DKIM::Signer->new(
+			Algorithm => 'rsa-sha256',
+			Method => 'relaxed',
+			Domain => $opt{'domain'},
+			Selector => $opt{'selector'},
+			KeyFile => $keyfile,
+		);
+		$signer->PRINT($wire);
+		$signer->CLOSE;
+		$signed = $signer->signature->as_string . "\n" . $message;
+		1;
+	} or do {
+		my $error = $@ || 'unknown error';
+		chomp($error);
+		die "Cannot sign with $keyfile: $error\n"
+			. "Check that it is the key published at $opt{'selector'}._domainkey.$opt{'domain'}.\n";
+	};
 
 	return $signed;
 }
@@ -241,8 +231,8 @@ Usage:
   --sendmail PATH   sendmail to use           (default $opt{'sendmail'})
   --help            this text
 
-Sent through Web::VWF::Mail, the same signer the site uses, so that what
-arrives is what the site's mail actually looks like.
+Sent through Mail::DKIM::Signer, the signer bin/mail-dkim uses, so that
+what arrives is what the site's mail actually looks like.
 USAGE
 
 	exit($status);

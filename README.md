@@ -207,18 +207,19 @@ nothing new exits 0 and says nothing.
 A report tells you what the receivers made of the mail; a signature is what
 makes a copy of it forwarded by someone else stop looking like a forgery, and
 is what `p=quarantine` and `p=reject` are cheap enough to ask for.
-`bin/dkim-sendmail` is that half of the job: put it where a CGI script or a
+`bin/mail-dkim` is that half of the job: put it where a CGI script or a
 crontab calls sendmail(1) and the message is signed on its way out, with no
-change to the script that sends it.
+change to the script that sends it.  The signing itself is [Mail::Send::DKIM](https://metacpan.org/pod/Mail%3A%3ASend%3A%3ADKIM),
+which the programme is a thin front end to.
 
 ```
-    DKIM_DOMAINS=example.org DKIM_KEYDIR=~/dkim dkim-sendmail -t -f webmaster@example.org < message
+    DKIM_DOMAINS=example.org DKIM_KEYDIR=~/dkim mail-dkim -t -f webmaster@example.org < message
 ```
 
 Only the domains named in `DKIM_DOMAINS` are signed.  Everything else - a
 foreign `From:`, a missing key, a message with no `From:` at all - is passed
 to sendmail untouched, so installing it cannot stop mail being delivered.
-`perldoc bin/dkim-sendmail` has the key layout and the rest.
+`perldoc bin/mail-dkim` has the key layout and the rest.
 
 ## Cookbook: Trends Across Reporters
 
@@ -351,18 +352,20 @@ the archive and log defaults land in the temporary directory:
 - an empty reports directory exits 0 without a word, while a missing one still fails and says why
 - a finding is mailed, and the mail says how many reports were archived.
 
-`t/dkim-sendmail.t` makes its own key pair at run time and proves that the
-signature the wrapper produces verifies against it, through a stubbed DNS
-lookup, so no key material is in the repository.  It also covers the messages
-that have to pass through unsigned, the sendmail arguments, and the exit
-status.
+`t/mail-dkim.t` makes its own key pair at run time and proves that the
+signature [Mail::Send::DKIM](https://metacpan.org/pod/Mail%3A%3ASend%3A%3ADKIM) produces verifies against it, through a stubbed
+DNS lookup, so no key material is in the repository.  It calls the module
+directly - no process, no captured message - and covers the messages that have
+to pass through unsigned and the errors that have to be warnings.  The
+programme itself is then tested only for its wiring: stdin in, sendmail's
+arguments out, sendmail's exit status back.
 
 `t/readme.t` runs pod2github over this file and fails if the committed
 README.md is not what it produces, so the two cannot drift apart.  Regenerate
 it with:
 
 ```
-    pod2github dmarc-report.pl > README.md
+    pod2github bin/dmarc-report.pl > README.md
 ```
 
 The title in that output comes from `.pod2github-header.md`, named by

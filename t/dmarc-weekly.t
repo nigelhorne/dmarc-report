@@ -16,7 +16,7 @@ use File::Basename qw(dirname);
 use File::Spec;
 use File::Temp qw(tempdir);
 
-my $WRAPPER = File::Spec->catfile(dirname(File::Spec->rel2abs($0)), File::Spec->updir(), 'dmarc-weekly.sh');
+my $WRAPPER = File::Spec->catfile(dirname(File::Spec->rel2abs($0)), File::Spec->updir(), 'bin', 'dmarc-weekly.sh');
 my $EXPECTED = '192.0.2.10';
 
 BAIL_OUT("Cannot find $WRAPPER") unless(-x $WRAPPER);
@@ -86,7 +86,9 @@ XML
 # any mail in a file instead of trying to find a transport.
 sub run_wrapper
 {
-	my (%env) = @_;
+	my @rest = @_;
+	my $args = (ref($rest[0]) eq 'ARRAY') ? shift(@rest) : [];
+	my %env = @rest;
 
 	my $out = File::Spec->catfile($main::TMP, 'stdout.txt');
 	my $err = File::Spec->catfile($main::TMP, 'stderr.txt');
@@ -116,7 +118,7 @@ sub run_wrapper
 		}
 		open(STDOUT, '>', $out) or exit 127;
 		open(STDERR, '>', $err) or exit 127;
-		exec($WRAPPER) or exit 127;
+		exec($WRAPPER, @$args) or exit 127;
 	}
 
 	waitpid($pid, 0);
@@ -250,6 +252,27 @@ subtest 'a finding is mailed, and names the archive' => sub {
 	ok(-f File::Spec->catfile($ARCHIVE, 'bad.xml'), 'the report was archived');
 	like(slurp(File::Spec->catfile($main::HOME, 'dmarc-report.log')), qr/exit 1/,
 		'the log records the run even though the mail went out');
+};
+
+subtest 'a crontab line can be printed, and nothing is run' => sub {
+	my $home = fresh_home('crontab');
+	my ($status, $out, $err, $mail) = run_wrapper(['--crontab'],
+		HOME => $home, DMARC_EXPECTED => '192.0.2.10', MAIL_TO => 'alerts@example.org');
+
+	is($status, 0, 'it exited 0');
+	is($err, '', 'nothing on stderr');
+	is($mail, '', 'nothing was mailed');
+
+	like($out, qr/^# /m, 'it explains itself');
+	like($out, qr/^\S+ \S+ \S+ \S+ \S+ DMARC_EXPECTED=/m, 'the line starts with the five cron fields');
+	like($out, qr/\Q$WRAPPER\E/, 'and names the wrapper by its full path');
+	like($out, qr/\bDMARC_EXPECTED=192\.0\.2\.10\b/, 'with the expected sender');
+	like($out, qr/\bMAIL_TO=alerts\@example\.org\b/, 'the address a finding is mailed to');
+	like($out, qr/\bPERL=\//, 'and an absolute perl, because cron has no useful PATH');
+
+	# Printing must not be a rehearsal run of the check itself.
+	ok(!-e File::Spec->catfile($home, 'dmarc-archive'), 'no archive directory was made');
+	ok(!-e File::Spec->catfile($home, 'dmarc-report.log'), 'and nothing was logged');
 };
 
 done_testing();

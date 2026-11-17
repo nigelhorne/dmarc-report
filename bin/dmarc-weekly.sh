@@ -38,6 +38,27 @@ ARCHIVE=${DMARC_ARCHIVE_DIR:-$HOME/dmarc-archive}
 MAIL_TO=${MAIL_TO:-alerts@example.org}
 LOG=${DMARC_LOG:-$HOME/dmarc-report.log}
 SUBJECT="DMARC: mail that needs looking at"
+SELF="$SELF_DIR/$(basename "$0")"
+
+# Printing the crontab line, not installing it: what a crontab needs depends on
+# where the programmes landed and which perl has XML::LibXML on this machine,
+# and this is the one place that knows both.
+if [ "${1:-}" = '--crontab' ]; then
+	# cron runs with a tiny PATH, so a bare 'perl' in the line would find the
+	# system one, or none at all.
+	cron_perl=$PERL
+	case "$cron_perl" in
+		/*) ;;
+		*) cron_perl=$(command -v "$PERL" 2>/dev/null || printf '%s' "$PERL") ;;
+	esac
+
+	printf '# DMARC weekly check; nothing is mailed when the week is clean.\n'
+	printf '# Replace the expected sender: it is what makes another one a finding.\n'
+	printf '0 6 * * 1 DMARC_EXPECTED=%s MAIL_TO=%s PERL=%s %s\n' \
+		"${DMARC_EXPECTED:-192.0.2.10}" "$MAIL_TO" "$cron_perl" "$SELF"
+	printf '# Add DMARC_DIR=... and DMARC_ARCHIVE_DIR=... if they are not the defaults.\n'
+	exit 0
+fi
 
 MOVED=0
 

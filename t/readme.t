@@ -14,7 +14,7 @@ use File::Spec;
 use File::Temp qw(tempdir);
 
 my $ROOT = File::Spec->catdir(dirname(File::Spec->rel2abs($0)), File::Spec->updir());
-my $SOURCE = File::Spec->catfile($ROOT, 'dmarc-report.pl');
+my $SOURCE = File::Spec->catfile($ROOT, 'bin', 'dmarc-report.pl');
 my $README = File::Spec->catfile($ROOT, 'README.md');
 
 plan skip_all => "Cannot find $SOURCE" unless(-r $SOURCE);
@@ -63,7 +63,7 @@ if(!$pid) {
 	chdir($ROOT) or exit 127;
 	open(STDOUT, '>', $out) or exit 127;
 	open(STDERR, '>', $err) or exit 127;
-	exec($pod2github, 'dmarc-report.pl') or exit 127;
+	exec($pod2github, 'bin/dmarc-report.pl') or exit 127;
 }
 
 waitpid($pid, 0);
@@ -89,7 +89,7 @@ if($generated ne $committed) {
 	}
 
 	diag('README.md is out of date; regenerate it with:');
-	diag('    pod2github dmarc-report.pl > README.md');
+	diag('    pod2github bin/dmarc-report.pl > README.md');
 	diag('first difference at line ' . ($first + 1) . ':');
 	diag('  generated: ' . ($generated[$first] // '(end of file)'));
 	diag('  README.md: ' . ($committed[$first] // '(end of file)'));

@@ -588,16 +588,17 @@ nothing new exits 0 and says nothing.
 A report tells you what the receivers made of the mail; a signature is what
 makes a copy of it forwarded by someone else stop looking like a forgery, and
 is what C<p=quarantine> and C<p=reject> are cheap enough to ask for.
-C<bin/dkim-sendmail> is that half of the job: put it where a CGI script or a
+C<bin/mail-dkim> is that half of the job: put it where a CGI script or a
 crontab calls sendmail(1) and the message is signed on its way out, with no
-change to the script that sends it.
+change to the script that sends it.  The signing itself is L<Mail::Send::DKIM>,
+which the programme is a thin front end to.
 
-	DKIM_DOMAINS=example.org DKIM_KEYDIR=~/dkim dkim-sendmail -t -f webmaster@example.org < message
+	DKIM_DOMAINS=example.org DKIM_KEYDIR=~/dkim mail-dkim -t -f webmaster@example.org < message
 
 Only the domains named in C<DKIM_DOMAINS> are signed.  Everything else - a
 foreign C<From:>, a missing key, a message with no C<From:> at all - is passed
 to sendmail untouched, so installing it cannot stop mail being delivered.
-C<perldoc bin/dkim-sendmail> has the key layout and the rest.
+C<perldoc bin/mail-dkim> has the key layout and the rest.
 
 =head1 COOKBOOK: TRENDS ACROSS REPORTERS
 
@@ -733,17 +734,19 @@ the archive and log defaults land in the temporary directory:
 
 =back
 
-C<t/dkim-sendmail.t> makes its own key pair at run time and proves that the
-signature the wrapper produces verifies against it, through a stubbed DNS
-lookup, so no key material is in the repository.  It also covers the messages
-that have to pass through unsigned, the sendmail arguments, and the exit
-status.
+C<t/mail-dkim.t> makes its own key pair at run time and proves that the
+signature L<Mail::Send::DKIM> produces verifies against it, through a stubbed
+DNS lookup, so no key material is in the repository.  It calls the module
+directly - no process, no captured message - and covers the messages that have
+to pass through unsigned and the errors that have to be warnings.  The
+programme itself is then tested only for its wiring: stdin in, sendmail's
+arguments out, sendmail's exit status back.
 
 C<t/readme.t> runs pod2github over this file and fails if the committed
 README.md is not what it produces, so the two cannot drift apart.  Regenerate
 it with:
 
-	pod2github dmarc-report.pl > README.md
+	pod2github bin/dmarc-report.pl > README.md
 
 The title in that output comes from C<.pod2github-header.md>, named by
 C<.pod2github.yml>: the generator shifts the POD headings down a level, which

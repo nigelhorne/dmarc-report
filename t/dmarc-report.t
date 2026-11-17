@@ -12,7 +12,7 @@ use IO::Compress::Gzip qw(gzip $GzipError);
 use IO::Compress::Zip qw(zip $ZipError);
 use Time::HiRes qw(time);
 
-my $SCRIPT = File::Spec->catfile(dirname(File::Spec->rel2abs($0)), File::Spec->updir(), 'dmarc-report.pl');
+my $SCRIPT = File::Spec->catfile(dirname(File::Spec->rel2abs($0)), File::Spec->updir(), 'bin', 'dmarc-report.pl');
 my $EXPECTED = '192.0.2.10';
 
 BAIL_OUT("Cannot find $SCRIPT") unless(-r $SCRIPT);
